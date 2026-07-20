@@ -116,29 +116,29 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
   const requestedLocale: Locale = input.locale === "en" ? "en" : "zh";
   const locale: Locale = detectReplyLocale(input.userMessage, requestedLocale);
 
-  memoryDb.ensureUser({
+  await memoryDb.ensureUser({
     id: input.userId,
     name: input.userName,
     role: input.userRole,
     locale: requestedLocale,
   });
 
-  const thread =
-    input.threadId && memoryDb.getThread(input.threadId)
-      ? memoryDb.getThread(input.threadId)
-      : memoryDb.createThread(input.userId, summarizeThreadTitle(input.userMessage, locale));
+  const thread = input.threadId
+    ? (await memoryDb.getThread(input.threadId)) ??
+      (await memoryDb.createThread(input.userId, summarizeThreadTitle(input.userMessage, locale)))
+    : await memoryDb.createThread(input.userId, summarizeThreadTitle(input.userMessage, locale));
 
   if (!thread) {
     throw new Error("Failed to initialize thread");
   }
   if (input.onThreadReady) input.onThreadReady(thread.id);
 
-  const previousAssistantReply = [...memoryDb.listMessages(thread.id)]
+  const previousAssistantReply = [...(await memoryDb.listMessages(thread.id))]
     .reverse()
     .find((message) => message.role === "assistant")
     ?.content || extractLatestAssistantFromHistory(input.clientHistory) || undefined;
 
-  const userMessage = memoryDb.createMessage({
+  const userMessage = await memoryDb.createMessage({
     threadId: thread.id,
     userId: input.userId,
     role: "user",
@@ -149,7 +149,7 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
 
   const intent = detectIntent(input.userMessage);
   const safety = { mode: "allow" as const };
-  const context = buildContext({
+  const context = await buildContext({
     threadId: thread.id,
     userId: input.userId,
     locale: requestedLocale,
@@ -193,7 +193,7 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
     provider: generation.provider,
   };
 
-  const assistantMessage = memoryDb.createMessage({
+  const assistantMessage = await memoryDb.createMessage({
     threadId: thread.id,
     userId: input.userId,
     role: "assistant",
@@ -201,7 +201,7 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
     locale,
   });
 
-  memoryDb.createEvent({
+  await memoryDb.createEvent({
     userId: input.userId,
     name: "chat_completion",
     payload: {

@@ -26,7 +26,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       status?: "draft" | "published";
     };
 
-    const video = memoryDb.updateVideo(params.id, {
+    const video = await memoryDb.updateVideo(params.id, {
       title: typeof body.title === "string" ? body.title.trim() : undefined,
       description: typeof body.description === "string" ? body.description.trim() : undefined,
       url: typeof body.url === "string" ? body.url.trim() : undefined,
@@ -40,7 +40,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
     if (!video) return jsonError("VIDEO_NOT_FOUND", 404);
 
-    memoryDb.createAuditLog({
+    await memoryDb.createAuditLog({
       userId: admin.id,
       action: "video_updated",
       details: JSON.stringify({ videoId: video.id }),

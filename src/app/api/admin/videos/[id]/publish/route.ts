@@ -5,10 +5,10 @@ import { jsonError, jsonOk } from "@/lib/ui/api";
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   try {
     const admin = assertAdmin(req);
-    const video = memoryDb.publishVideo(params.id);
+    const video = await memoryDb.publishVideo(params.id);
     if (!video) return jsonError("VIDEO_NOT_FOUND", 404);
 
-    memoryDb.createAuditLog({
+    await memoryDb.createAuditLog({
       userId: admin.id,
       action: "video_published",
       details: JSON.stringify({ videoId: video.id }),

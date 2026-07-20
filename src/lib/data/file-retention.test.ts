@@ -2,16 +2,16 @@ import { describe, expect, it } from "vitest";
 import { memoryDb, resetMemoryDbForTests } from "@/lib/data/memory-db";
 
 describe("file retention", () => {
-  it("marks expired files when retention window passed", () => {
+  it("marks expired files when retention window passed", async () => {
     resetMemoryDbForTests();
-    memoryDb.ensureUser({
+    await memoryDb.ensureUser({
       id: "u_test",
       name: "Tester",
       role: "user",
       locale: "zh",
     });
 
-    const file = memoryDb.createFileAsset({
+    const file = await memoryDb.createFileAsset({
       userId: "u_test",
       fileName: "notes.txt",
       mimeType: "text/plain",
@@ -19,12 +19,12 @@ describe("file retention", () => {
       storageKey: "uploads/u_test/notes.txt",
     });
 
-    memoryDb.updateFile(file.id, {
+    await memoryDb.updateFile(file.id, {
       status: "ready",
       expiresAt: new Date(Date.now() - 60_000).toISOString(),
     });
 
-    const files = memoryDb.listFiles("u_test");
+    const files = await memoryDb.listFiles("u_test");
     expect(files[0].status).toBe("expired");
   });
 });

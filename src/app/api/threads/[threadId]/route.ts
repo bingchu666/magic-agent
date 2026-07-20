@@ -5,12 +5,12 @@ import { jsonError, jsonOk } from "@/lib/ui/api";
 export async function DELETE(req: Request, { params }: { params: { threadId: string } }) {
   try {
     const session = assertSession(req);
-    const deleted = memoryDb.deleteThread(params.threadId, session.id);
+    const deleted = await memoryDb.deleteThread(params.threadId, session.id);
     if (!deleted) {
       return jsonError("THREAD_NOT_FOUND", 404);
     }
 
-    memoryDb.createEvent({
+    await memoryDb.createEvent({
       userId: session.id,
       name: "thread_deleted",
       payload: {

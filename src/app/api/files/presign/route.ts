@@ -15,7 +15,7 @@ export async function POST(req: Request) {
       return jsonError("fileName and mimeType are required", 400);
     }
 
-    const file = memoryDb.createFileAsset({
+    const file = await memoryDb.createFileAsset({
       userId: session.id,
       fileName: body.fileName,
       mimeType: body.mimeType,
@@ -23,7 +23,7 @@ export async function POST(req: Request) {
       storageKey: `uploads/${session.id}/${Date.now()}_${body.fileName}`,
     });
 
-    memoryDb.createEvent({
+    await memoryDb.createEvent({
       userId: session.id,
       name: "file_presigned",
       payload: {

@@ -166,7 +166,7 @@ export async function recommendVideosDynamic(input: {
   });
   const rescored = await enrichWithModelScore(context, validated);
 
-  let picked = rankAndFuseRecommendations({
+  let picked = await rankAndFuseRecommendations({
     locale: context.locale,
     userId: context.userId,
     threadId: context.threadId,
@@ -189,7 +189,7 @@ export async function recommendVideosDynamic(input: {
         }
       );
       const fallbackRescored = await enrichWithModelScore(context, fallbackValidated);
-      const fallbackPicked = rankAndFuseRecommendations({
+      const fallbackPicked = await rankAndFuseRecommendations({
         locale: context.locale,
         userId: context.userId,
         threadId: context.threadId,
@@ -209,7 +209,7 @@ export async function recommendVideosDynamic(input: {
   recommendationCache.set(key, picked);
   recommendationCache.cleanup();
 
-  memoryDb.createEvent({
+  await memoryDb.createEvent({
     userId: context.userId,
     name: "video_recommendation_fused",
     payload: {

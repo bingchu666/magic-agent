@@ -2,11 +2,11 @@ import { Locale } from "@/lib/domain/types";
 import { memoryDb } from "@/lib/data/memory-db";
 import { recommendVideosDynamic } from "@/lib/recommendation/service";
 
-function buildConversationText(threadId?: string, fallback?: string) {
+async function buildConversationText(threadId?: string, fallback?: string) {
   if (fallback && fallback.trim()) return fallback;
   if (!threadId) return "";
 
-  const messages = memoryDb.listMessages(threadId).slice(-8);
+  const messages = (await memoryDb.listMessages(threadId)).slice(-8);
   return messages
     .map((message) => `${message.role}: ${message.content}`)
     .join("\n")
@@ -24,7 +24,7 @@ export async function recommendVideos(params: {
   const threadId = params.threadId || "thread_ephemeral";
   const userId = params.userId || "guest_user";
 
-  const conversationText = buildConversationText(params.threadId, params.conversationText);
+  const conversationText = await buildConversationText(params.threadId, params.conversationText);
 
   return recommendVideosDynamic({
     locale: params.locale,

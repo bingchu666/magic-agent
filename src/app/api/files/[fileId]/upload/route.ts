@@ -5,16 +5,16 @@ import { jsonError, jsonOk } from "@/lib/ui/api";
 export async function PUT(req: Request, { params }: { params: { fileId: string } }) {
   try {
     const session = assertSession(req);
-    const file = memoryDb.getFile(params.fileId);
+    const file = await memoryDb.getFile(params.fileId);
 
     if (!file || file.userId !== session.id) {
       return jsonError("FILE_NOT_FOUND", 404);
     }
 
     const buffer = await req.arrayBuffer();
-    memoryDb.saveUpload(file.id, buffer);
+    await memoryDb.saveUpload(file.id, buffer);
 
-    memoryDb.createEvent({
+    await memoryDb.createEvent({
       userId: session.id,
       name: "file_uploaded",
       payload: {

@@ -34,16 +34,16 @@ function buildSyntheticTranscript(fileName: string, mimeType: string) {
 }
 
 async function runProcessing(jobId: string) {
-  const job = memoryDb.getFileJob(jobId);
+  const job = await memoryDb.getFileJob(jobId);
   if (!job) return;
 
-  memoryDb.updateFileJob(job.id, "processing", {
+  await memoryDb.updateFileJob(job.id, "processing", {
     startedAt: nowIso(),
   });
 
-  const file = memoryDb.getFile(job.fileId);
+  const file = await memoryDb.getFile(job.fileId);
   if (!file) {
-    memoryDb.updateFileJob(job.id, "failed", {
+    await memoryDb.updateFileJob(job.id, "failed", {
       finishedAt: nowIso(),
       error: "Missing file",
     });
@@ -51,7 +51,7 @@ async function runProcessing(jobId: string) {
   }
 
   try {
-    const upload = memoryDb.getUpload(file.id);
+    const upload = await memoryDb.getUpload(file.id);
     let text = upload ? decodeText(upload) : "";
 
     if (!text) {
@@ -61,7 +61,7 @@ async function runProcessing(jobId: string) {
     const summaryZh = summarizeText(text, "zh");
     const summaryEn = summarizeText(text, "en");
 
-    memoryDb.updateFile(file.id, {
+    await memoryDb.updateFile(file.id, {
       status: "ready",
       previewText: text.slice(0, 2400),
       summaryZh,
@@ -70,28 +70,28 @@ async function runProcessing(jobId: string) {
       translatedEn: summaryEn,
     });
 
-    memoryDb.createFileInsight({
+    await memoryDb.createFileInsight({
       fileId: file.id,
       userId: file.userId,
       kind: "summary",
       locale: "zh",
       content: summaryZh,
     });
-    memoryDb.createFileInsight({
+    await memoryDb.createFileInsight({
       fileId: file.id,
       userId: file.userId,
       kind: "summary",
       locale: "en",
       content: summaryEn,
     });
-    memoryDb.createFileInsight({
+    await memoryDb.createFileInsight({
       fileId: file.id,
       userId: file.userId,
       kind: "translation",
       locale: "zh",
       content: summaryZh,
     });
-    memoryDb.createFileInsight({
+    await memoryDb.createFileInsight({
       fileId: file.id,
       userId: file.userId,
       kind: "translation",
@@ -99,8 +99,8 @@ async function runProcessing(jobId: string) {
       content: summaryEn,
     });
 
-    memoryDb.updateFileJob(job.id, "done", { finishedAt: nowIso() });
-    memoryDb.createEvent({
+    await memoryDb.updateFileJob(job.id, "done", { finishedAt: nowIso() });
+    await memoryDb.createEvent({
       userId: file.userId,
       name: "file_processed",
       payload: {
@@ -109,22 +109,22 @@ async function runProcessing(jobId: string) {
       },
     });
   } catch (error) {
-    memoryDb.updateFile(file.id, { status: "failed" });
-    memoryDb.updateFileJob(job.id, "failed", {
+    await memoryDb.updateFile(file.id, { status: "failed" });
+    await memoryDb.updateFileJob(job.id, "failed", {
       finishedAt: nowIso(),
       error: error instanceof Error ? error.message : "Unknown error",
     });
   }
 }
 
-export function enqueueFileProcessing(params: { fileId: string; userId: string }) {
-  const file = memoryDb.getFile(params.fileId);
+export async function enqueueFileProcessing(params: { fileId: string; userId: string }) {
+  const file = await memoryDb.getFile(params.fileId);
   if (!file || file.userId !== params.userId) {
     throw new Error("FILE_NOT_FOUND");
   }
 
-  const job = memoryDb.createFileJob(file.id, params.userId);
-  memoryDb.updateFile(file.id, { status: "processing" });
+  const job = await memoryDb.createFileJob(file.id, params.userId);
+  await memoryDb.updateFile(file.id, { status: "processing" });
 
   if (!activeJobs.has(job.id)) {
     activeJobs.add(job.id);

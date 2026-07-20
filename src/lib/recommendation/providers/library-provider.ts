@@ -14,11 +14,11 @@ export function createLibraryProvider(): VideoProvider {
       const query = buildQueryFromContext(context);
       const queryVector = embedText(query);
       const preferredDifficulty = inferDifficulty(query);
-      const videos = memoryDb.listPublishedVideos(context.locale);
+      const videos = await memoryDb.listPublishedVideos(context.locale);
 
-      return videos
-        .map((video) => {
-          const embedding = memoryDb.getVideoEmbedding(video.id);
+      const candidates = await Promise.all(
+        videos.map(async (video) => {
+          const embedding = await memoryDb.getVideoEmbedding(video.id);
           const semantic = embedding ? cosineSimilarity(queryVector, embedding.vector) : 0;
           const difficultyBoost = video.difficulty === preferredDifficulty ? 0.1 : 0;
           return {
@@ -34,6 +34,9 @@ export function createLibraryProvider(): VideoProvider {
             publishedAt: video.publishedAt,
           };
         })
+      );
+
+      return candidates
         .sort((a, b) => (b.rawScore ?? 0) - (a.rawScore ?? 0))
         .slice(0, recommendationConfig.maxCandidatesPerProvider);
     },

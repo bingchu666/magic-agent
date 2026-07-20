@@ -15,7 +15,7 @@ function asDifficulty(input: unknown): VideoDifficulty {
 export async function GET(req: Request) {
   try {
     assertAdmin(req);
-    return jsonOk({ items: memoryDb.listVideosForAdmin() });
+    return jsonOk({ items: await memoryDb.listVideosForAdmin() });
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Unauthorized";
     return jsonError(msg, msg === "FORBIDDEN" ? 403 : 401);
@@ -38,7 +38,7 @@ export async function POST(req: Request) {
       return jsonError("title, description, and url are required", 400);
     }
 
-    const video = memoryDb.createVideo({
+    const video = await memoryDb.createVideo({
       createdBy: admin.id,
       title: body.title.trim(),
       description: body.description.trim(),
@@ -50,7 +50,7 @@ export async function POST(req: Request) {
         : [],
     });
 
-    memoryDb.createAuditLog({
+    await memoryDb.createAuditLog({
       userId: admin.id,
       action: "video_created",
       details: JSON.stringify({ videoId: video.id }),

@@ -5,7 +5,7 @@ import { memoryDb } from "@/lib/data/memory-db";
 export async function GET(req: Request) {
   try {
     const session = assertSession(req);
-    const threads = memoryDb.listThreads(session.id);
+    const threads = await memoryDb.listThreads(session.id);
     return jsonOk({ items: threads });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unauthorized";
@@ -28,8 +28,8 @@ export async function POST(req: Request) {
       ? "新对话"
       : "New Thread";
 
-    const thread = memoryDb.createThread(session.id, title);
-    memoryDb.createEvent({
+    const thread = await memoryDb.createThread(session.id, title);
+    await memoryDb.createEvent({
       userId: session.id,
       name: "thread_created",
       payload: { threadId: thread.id },

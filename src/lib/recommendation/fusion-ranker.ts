@@ -111,7 +111,7 @@ function diversify(scored: ScoredCandidate[], topN: number) {
   return selected.slice(0, topN);
 }
 
-export function rankAndFuseRecommendations(input: RankInput): VideoRecommendation[] {
+export async function rankAndFuseRecommendations(input: RankInput): Promise<VideoRecommendation[]> {
   const { locale, userId, threadId, userMessage, conversationText, providerWeights, limit, goalTopic } = input;
   const unique = dedupeCandidates(input.candidates);
   if (!unique.length) return [];
@@ -124,7 +124,7 @@ export function rankAndFuseRecommendations(input: RankInput): VideoRecommendatio
   const topicShifted = detectTopicShift(queryTags, historyTags);
 
   const recentIds = new Set(
-    memoryDb.listRecentlyRecommendedVideoIdsByThread(
+    await memoryDb.listRecentlyRecommendedVideoIdsByThread(
       threadId,
       userId,
       recommendationConfig.recentHistoryWindow

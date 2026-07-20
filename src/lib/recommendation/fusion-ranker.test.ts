@@ -3,10 +3,10 @@ import { resetMemoryDbForTests } from "@/lib/data/memory-db";
 import { rankAndFuseRecommendations } from "@/lib/recommendation/fusion-ranker";
 
 describe("rankAndFuseRecommendations", () => {
-  it("dedupes by normalized url and keeps diversified sources", () => {
+  it("dedupes by normalized url and keeps diversified sources", async () => {
     resetMemoryDbForTests();
 
-    const items = rankAndFuseRecommendations({
+    const items = await rankAndFuseRecommendations({
       locale: "zh",
       userId: "u1",
       threadId: "t1",

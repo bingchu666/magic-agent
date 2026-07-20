@@ -27,14 +27,14 @@ export async function POST(req: Request) {
 
     const userId = `u_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_") || "magic"}`;
 
-    const user = memoryDb.ensureUser({
+    const user = await memoryDb.ensureUser({
       id: userId,
       name,
       role,
       locale,
     });
 
-    memoryDb.createEvent({
+    await memoryDb.createEvent({
       userId: user.id,
       name: "auth_login",
       payload: {

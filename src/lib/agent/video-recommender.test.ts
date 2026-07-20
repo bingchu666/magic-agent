@@ -2,14 +2,14 @@ import { describe, expect, it } from "vitest";
 import { recommendVideos } from "@/lib/agent/video-recommender";
 import { memoryDb, resetMemoryDbForTests } from "@/lib/data/memory-db";
 
-function seedVerifiedVideo() {
-  memoryDb.ensureUser({
+async function seedVerifiedVideo() {
+  await memoryDb.ensureUser({
     id: "admin_seed",
     name: "Admin Seed",
     role: "admin",
     locale: "en",
   });
-  const video = memoryDb.createVideo({
+  const video = await memoryDb.createVideo({
     createdBy: "admin_seed",
     title: "Card double lift timing drill",
     description: "Beginner card training with rhythm checkpoints.",
@@ -18,13 +18,13 @@ function seedVerifiedVideo() {
     difficulty: "beginner",
     tags: ["cards", "practice", "double-lift"],
   });
-  memoryDb.publishVideo(video.id);
+  await memoryDb.publishVideo(video.id);
 }
 
 describe("recommendVideos", () => {
   it("returns up to 3 recommendations", async () => {
     resetMemoryDbForTests();
-    seedVerifiedVideo();
+    await seedVerifiedVideo();
     const items = await recommendVideos({
       userMessage: "I want a beginner card opener",
       locale: "en",
@@ -37,7 +37,7 @@ describe("recommendVideos", () => {
 
   it("prefers beginner when explicitly requested", async () => {
     resetMemoryDbForTests();
-    seedVerifiedVideo();
+    await seedVerifiedVideo();
     const items = await recommendVideos({
       userMessage: "beginner cards practice",
       locale: "en",

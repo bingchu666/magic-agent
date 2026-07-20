@@ -5,13 +5,13 @@ import { jsonError, jsonOk } from "@/lib/ui/api";
 export async function GET(req: Request, { params }: { params: { fileId: string } }) {
   try {
     const session = assertSession(req);
-    const file = memoryDb.getFile(params.fileId);
+    const file = await memoryDb.getFile(params.fileId);
     if (!file || file.userId !== session.id) {
       return jsonError("FILE_NOT_FOUND", 404);
     }
 
-    const jobs = memoryDb.listFileJobs(file.id);
-    const insights = memoryDb.listFileInsightsByIds(session.id, [file.id]);
+    const jobs = await memoryDb.listFileJobs(file.id);
+    const insights = await memoryDb.listFileInsightsByIds(session.id, [file.id]);
 
     return jsonOk({
       file,
@@ -26,12 +26,12 @@ export async function GET(req: Request, { params }: { params: { fileId: string }
 export async function DELETE(req: Request, { params }: { params: { fileId: string } }) {
   try {
     const session = assertSession(req);
-    const deleted = memoryDb.deleteFile(params.fileId, session.id);
+    const deleted = await memoryDb.deleteFile(params.fileId, session.id);
     if (!deleted) {
       return jsonError("FILE_NOT_FOUND", 404);
     }
 
-    memoryDb.createEvent({
+    await memoryDb.createEvent({
       userId: session.id,
       name: "file_deleted",
       payload: {
