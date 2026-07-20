@@ -19,6 +19,7 @@ import {
 } from "@/lib/domain/types";
 import { createId, nowIso } from "@/lib/domain/utils";
 import { embedText } from "@/lib/ai/embedding";
+import { embedTrickText } from "@/lib/ai/trick-embedding";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { createServerClient } from "@supabase/ssr";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -620,5 +621,73 @@ export const supabaseDb = {
       await supabase.from("thread_learning_state").insert(toSnake(next));
     }
     return next;
+  },
+
+  // ── Tricks (RAG knowledge base) ─────────────────────────
+
+  async createTrick(payload: {
+    title: string;
+    effectDescription: string;
+    methodSummary: string;
+    difficulty: "beginner" | "intermediate" | "advanced";
+    propsNeeded: string[];
+    tags: string[];
+    source: string;
+  }) {
+    const supabase = sc();
+    const { data: trick, error } = await supabase
+      .from("tricks")
+      .insert({
+        title: payload.title,
+        effect_description: payload.effectDescription,
+        method_summary: payload.methodSummary,
+        difficulty: payload.difficulty,
+        props_needed: payload.propsNeeded,
+        tags: payload.tags,
+        source: payload.source,
+      })
+      .select()
+      .single();
+
+    if (error || !trick) {
+      throw new Error(`Failed to create trick: ${error?.message ?? "unknown error"}`);
+    }
+
+    // Chunk + embed: simple single-chunk-per-trick to start (matches the
+    // original Python pipeline's approach for short, curated entries).
+    const chunkText = `${payload.effectDescription}\n\n${payload.methodSummary}`;
+    const embedding = await embedTrickText(chunkText, "document");
+
+    await supabase.from("trick_chunks").insert({
+      trick_id: trick.id,
+      content: chunkText,
+      embedding,
+    });
+
+    return trick;
+  },
+
+  async listTricks() {
+    const supabase = sc();
+    const { data } = await supabase
+      .from("tricks")
+      .select("*")
+      .order("created_at", { ascending: false });
+    return typed<Record<string, unknown>[]>(data);
+  },
+
+  async searchTrickChunks(queryText: string, matchCount = 5) {
+    const supabase = sc();
+    const embedding = await embedTrickText(queryText, "query");
+    const { data, error } = await supabase.rpc("hybrid_search_trick_chunks", {
+      query_text: queryText,
+      query_embedding: embedding,
+      match_count: matchCount,
+    });
+
+    if (error) {
+      throw new Error(`Failed to search trick chunks: ${error.message}`);
+    }
+    return typed<Record<string, unknown>[]>(data);
   },
 };
