@@ -1,5 +1,5 @@
 import { Locale } from "@/lib/domain/types";
-import { memoryDb } from "@/lib/data/memory-db";
+import { supabaseDb } from "@/lib/data/supabase-db";
 import { stripMarkdown } from "@/lib/domain/utils";
 
 export async function buildContext(params: {
@@ -9,9 +9,10 @@ export async function buildContext(params: {
   attachmentIds?: string[];
 }) {
   const { threadId, userId, locale, attachmentIds = [] } = params;
-  const messages = (await memoryDb.listMessages(threadId)).slice(-16);
-  const explicitInsights = await memoryDb.listFileInsightsByIds(userId, attachmentIds);
-  const recentInsights = await memoryDb.listRecentFileInsights(userId, locale, 3);
+  const allMessages = await supabaseDb.listMessages(threadId);
+  const messages = allMessages.slice(-16);
+  const explicitInsights = await supabaseDb.listFileInsightsByIds(userId, attachmentIds);
+  const recentInsights = await supabaseDb.listRecentFileInsights(userId, locale, 3);
 
   const uniqueInsights = [...explicitInsights, ...recentInsights].filter(
     (insight, idx, arr) => idx === arr.findIndex((item) => item.id === insight.id)

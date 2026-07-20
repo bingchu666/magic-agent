@@ -1,10 +1,10 @@
 import { assertSession } from "@/features/auth/session.server";
-import { memoryDb } from "@/lib/data/memory-db";
+import { supabaseDb } from "@/lib/data/supabase-db";
 import { jsonError, jsonOk } from "@/lib/ui/api";
 
 export async function POST(req: Request) {
   try {
-    const session = assertSession(req);
+    const session = await assertSession(req);
     const body = (await req.json()) as {
       fileName?: string;
       mimeType?: string;
@@ -15,7 +15,7 @@ export async function POST(req: Request) {
       return jsonError("fileName and mimeType are required", 400);
     }
 
-    const file = await memoryDb.createFileAsset({
+    const file = await supabaseDb.createFileAsset({
       userId: session.id,
       fileName: body.fileName,
       mimeType: body.mimeType,
@@ -23,7 +23,7 @@ export async function POST(req: Request) {
       storageKey: `uploads/${session.id}/${Date.now()}_${body.fileName}`,
     });
 
-    await memoryDb.createEvent({
+    await supabaseDb.createEvent({
       userId: session.id,
       name: "file_presigned",
       payload: {

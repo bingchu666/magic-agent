@@ -1,12 +1,13 @@
 import { Locale } from "@/lib/domain/types";
-import { memoryDb } from "@/lib/data/memory-db";
+import { supabaseDb } from "@/lib/data/supabase-db";
 import { recommendVideosDynamic } from "@/lib/recommendation/service";
 
 async function buildConversationText(threadId?: string, fallback?: string) {
   if (fallback && fallback.trim()) return fallback;
   if (!threadId) return "";
 
-  const messages = (await memoryDb.listMessages(threadId)).slice(-8);
+  const allMessages = await supabaseDb.listMessages(threadId);
+  const messages = allMessages.slice(-8);
   return messages
     .map((message) => `${message.role}: ${message.content}`)
     .join("\n")

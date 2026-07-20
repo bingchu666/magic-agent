@@ -1,14 +1,14 @@
 import { assertAdmin } from "@/features/auth/session.server";
-import { memoryDb } from "@/lib/data/memory-db";
+import { supabaseDb } from "@/lib/data/supabase-db";
 import { jsonError, jsonOk } from "@/lib/ui/api";
 
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   try {
-    const admin = assertAdmin(req);
-    const video = await memoryDb.publishVideo(params.id);
+    const admin = await assertAdmin(req);
+    const video = await supabaseDb.publishVideo(params.id);
     if (!video) return jsonError("VIDEO_NOT_FOUND", 404);
 
-    await memoryDb.createAuditLog({
+    await supabaseDb.createAuditLog({
       userId: admin.id,
       action: "video_published",
       details: JSON.stringify({ videoId: video.id }),

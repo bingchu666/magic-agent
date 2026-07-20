@@ -1,4 +1,4 @@
-import { memoryDb } from "@/lib/data/memory-db";
+import { supabaseDb } from "@/lib/data/supabase-db";
 import { Locale, VideoRecommendation } from "@/lib/domain/types";
 import { recommendationCache } from "@/lib/recommendation/cache";
 import { recommendationConfig } from "@/lib/recommendation/config";
@@ -209,7 +209,7 @@ export async function recommendVideosDynamic(input: {
   recommendationCache.set(key, picked);
   recommendationCache.cleanup();
 
-  await memoryDb.createEvent({
+  await supabaseDb.createEvent({
     userId: context.userId,
     name: "video_recommendation_fused",
     payload: {

@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation";
+import { AuthScreen } from "@/features/auth/AuthScreen";
 
 export default function AuthPage() {
-  redirect("/chat");
+  return <AuthScreen />;
 }

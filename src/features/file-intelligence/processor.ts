@@ -1,4 +1,4 @@
-import { memoryDb } from "@/lib/data/memory-db";
+import { supabaseDb } from "@/lib/data/supabase-db";
 import { nowIso } from "@/lib/domain/utils";
 
 const activeJobs = new Set<string>();
@@ -34,16 +34,16 @@ function buildSyntheticTranscript(fileName: string, mimeType: string) {
 }
 
 async function runProcessing(jobId: string) {
-  const job = await memoryDb.getFileJob(jobId);
+  const job = await supabaseDb.getFileJob(jobId);
   if (!job) return;
 
-  await memoryDb.updateFileJob(job.id, "processing", {
+  await supabaseDb.updateFileJob(job.id, "processing", {
     startedAt: nowIso(),
   });
 
-  const file = await memoryDb.getFile(job.fileId);
+  const file = await supabaseDb.getFile(job.fileId);
   if (!file) {
-    await memoryDb.updateFileJob(job.id, "failed", {
+    await supabaseDb.updateFileJob(job.id, "failed", {
       finishedAt: nowIso(),
       error: "Missing file",
     });
@@ -51,7 +51,7 @@ async function runProcessing(jobId: string) {
   }
 
   try {
-    const upload = await memoryDb.getUpload(file.id);
+    const upload = await supabaseDb.getUpload(file.id);
     let text = upload ? decodeText(upload) : "";
 
     if (!text) {
@@ -61,7 +61,7 @@ async function runProcessing(jobId: string) {
     const summaryZh = summarizeText(text, "zh");
     const summaryEn = summarizeText(text, "en");
 
-    await memoryDb.updateFile(file.id, {
+    await supabaseDb.updateFile(file.id, {
       status: "ready",
       previewText: text.slice(0, 2400),
       summaryZh,
@@ -70,28 +70,28 @@ async function runProcessing(jobId: string) {
       translatedEn: summaryEn,
     });
 
-    await memoryDb.createFileInsight({
+    await supabaseDb.createFileInsight({
       fileId: file.id,
       userId: file.userId,
       kind: "summary",
       locale: "zh",
       content: summaryZh,
     });
-    await memoryDb.createFileInsight({
+    await supabaseDb.createFileInsight({
       fileId: file.id,
       userId: file.userId,
       kind: "summary",
       locale: "en",
       content: summaryEn,
     });
-    await memoryDb.createFileInsight({
+    await supabaseDb.createFileInsight({
       fileId: file.id,
       userId: file.userId,
       kind: "translation",
       locale: "zh",
       content: summaryZh,
     });
-    await memoryDb.createFileInsight({
+    await supabaseDb.createFileInsight({
       fileId: file.id,
       userId: file.userId,
       kind: "translation",
@@ -99,8 +99,8 @@ async function runProcessing(jobId: string) {
       content: summaryEn,
     });
 
-    await memoryDb.updateFileJob(job.id, "done", { finishedAt: nowIso() });
-    await memoryDb.createEvent({
+    await supabaseDb.updateFileJob(job.id, "done", { finishedAt: nowIso() });
+    await supabaseDb.createEvent({
       userId: file.userId,
       name: "file_processed",
       payload: {
@@ -109,8 +109,8 @@ async function runProcessing(jobId: string) {
       },
     });
   } catch (error) {
-    await memoryDb.updateFile(file.id, { status: "failed" });
-    await memoryDb.updateFileJob(job.id, "failed", {
+    await supabaseDb.updateFile(file.id, { status: "failed" });
+    await supabaseDb.updateFileJob(job.id, "failed", {
       finishedAt: nowIso(),
       error: error instanceof Error ? error.message : "Unknown error",
     });
@@ -118,13 +118,13 @@ async function runProcessing(jobId: string) {
 }
 
 export async function enqueueFileProcessing(params: { fileId: string; userId: string }) {
-  const file = await memoryDb.getFile(params.fileId);
+  const file = await supabaseDb.getFile(params.fileId);
   if (!file || file.userId !== params.userId) {
     throw new Error("FILE_NOT_FOUND");
   }
 
-  const job = await memoryDb.createFileJob(file.id, params.userId);
-  await memoryDb.updateFile(file.id, { status: "processing" });
+  const job = await supabaseDb.createFileJob(file.id, params.userId);
+  await supabaseDb.updateFile(file.id, { status: "processing" });
 
   if (!activeJobs.has(job.id)) {
     activeJobs.add(job.id);

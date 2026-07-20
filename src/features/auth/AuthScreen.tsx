@@ -2,16 +2,22 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
 const LOCALE_STORAGE_KEY = "magic_locale_v1";
 
 export function AuthScreen() {
   const router = useRouter();
+  const supabase = getSupabaseBrowserClient();
+
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [locale, setLocale] = useState<"zh" | "en">("zh");
-  const [role, setRole] = useState<"user" | "admin">("user");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -24,26 +30,19 @@ export function AuthScreen() {
     setLocale(browserLang.startsWith("zh") ? "zh" : "en");
   }, []);
 
-  const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
+  const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setLoading(true);
     setError(null);
+    setMessage(null);
 
     try {
-      const res = await fetch("/api/auth/demo-login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: name.trim() || "Magic User",
-          locale,
-          role,
-        }),
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
       });
 
-      if (!res.ok) {
-        const json = await res.json().catch(() => ({}));
-        throw new Error(json?.error || "Login failed");
-      }
+      if (signInError) throw signInError;
 
       if (typeof window !== "undefined") {
         window.localStorage.setItem(LOCALE_STORAGE_KEY, locale);
@@ -58,69 +57,206 @@ export function AuthScreen() {
     }
   };
 
+  const handleRegister = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setLoading(true);
+    setError(null);
+    setMessage(null);
+
+    try {
+      const { data, error: signUpError } = await supabase.auth.signUp({
+        email: email.trim(),
+        password,
+        options: {
+          data: {
+            name: name.trim() || email.split("@")[0],
+            locale,
+            role: "user",
+          },
+        },
+      });
+
+      if (signUpError) throw signUpError;
+
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(LOCALE_STORAGE_KEY, locale);
+      }
+
+      // Email confirmation is enabled — no session returned, user must verify first
+      if (data.session) {
+        router.replace("/chat");
+        router.refresh();
+      } else {
+        setMessage(
+          locale === "zh"
+            ? "注册成功！请查看邮箱并点击验证链接，验证后返回登录。"
+            : "Account created! Check your email for the confirmation link, then sign in."
+        );
+        setMode("login");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Registration failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const isZh = locale === "zh";
+
   return (
     <div className="grid min-h-screen place-items-center bg-[radial-gradient(circle_at_20%_20%,#fecdd3,transparent_35%),radial-gradient(circle_at_90%_0%,#a5f3fc,transparent_35%),linear-gradient(180deg,#f8fafc_0%,#e2e8f0_100%)] p-4">
       <div className="w-full max-w-lg rounded-[28px] border border-black/10 bg-white/90 p-8 shadow-2xl shadow-zinc-300/40 backdrop-blur">
         <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Magic Agent V1</p>
         <h1 className="mt-2 text-3xl font-semibold tracking-tight text-zinc-900">
-          {locale === "zh" ? "登录并开始你的魔术工作台" : "Sign in to your magic workspace"}
+          {isZh ? "登录你的魔术工作台" : "Sign in to your magic workspace"}
         </h1>
-        <p className="mt-2 text-sm text-zinc-500">
-          {locale === "zh"
-            ? "当前为内测登录模式，可选择 User/Admin 角色。"
-            : "Preview login mode with User/Admin role selection."}
-        </p>
 
-        <form onSubmit={onSubmit} className="mt-6 space-y-4">
-          <div>
-            <label className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
-              {locale === "zh" ? "昵称" : "Display Name"}
-            </label>
-            <input
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder={locale === "zh" ? "例如：Bingchu" : "e.g. Bingchu"}
-              className="mt-1 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm"
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
+        {mode === "login" ? (
+          <form onSubmit={handleLogin} className="mt-6 space-y-4">
             <div>
               <label className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
-                {locale === "zh" ? "语言" : "Locale"}
+                Email
+              </label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                placeholder="you@example.com"
+                className="mt-1 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                {isZh ? "密码" : "Password"}
+              </label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                minLength={6}
+                className="mt-1 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                {isZh ? "语言" : "Locale"}
               </label>
               <select
                 value={locale}
-                onChange={(event) => setLocale(event.target.value as "zh" | "en")}
+                onChange={(e) => setLocale(e.target.value as "zh" | "en")}
                 className="mt-1 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm"
               >
                 <option value="zh">中文</option>
                 <option value="en">English</option>
               </select>
             </div>
+
+            {error && <p className="text-xs text-rose-600">{error}</p>}
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full rounded-xl bg-black px-4 py-3 text-sm font-semibold uppercase tracking-wide text-white disabled:opacity-40"
+            >
+              {loading ? "..." : isZh ? "登录" : "Sign In"}
+            </button>
+
+            <p className="text-center text-sm text-zinc-500">
+              {isZh ? "还没有账号？" : "No account yet? "}
+              <button
+                type="button"
+                onClick={() => { setMode("register"); setError(null); setMessage(null); }}
+                className="font-semibold text-black underline"
+              >
+                {isZh ? "注册" : "Create one"}
+              </button>
+            </p>
+          </form>
+        ) : (
+          <form onSubmit={handleRegister} className="mt-6 space-y-4">
             <div>
-              <label className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Role</label>
+              <label className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                {isZh ? "昵称" : "Display Name"}
+              </label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+                placeholder={isZh ? "你的昵称" : "Your name"}
+                className="mt-1 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                Email
+              </label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                placeholder="you@example.com"
+                className="mt-1 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                {isZh ? "密码（至少 6 位）" : "Password (min 6 chars)"}
+              </label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                minLength={6}
+                className="mt-1 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                {isZh ? "语言" : "Locale"}
+              </label>
               <select
-                value={role}
-                onChange={(event) => setRole(event.target.value as "user" | "admin")}
+                value={locale}
+                onChange={(e) => setLocale(e.target.value as "zh" | "en")}
                 className="mt-1 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm"
               >
-                <option value="user">User</option>
-                <option value="admin">Admin</option>
+                <option value="zh">中文</option>
+                <option value="en">English</option>
               </select>
             </div>
-          </div>
 
-          {error ? <p className="text-xs text-rose-600">{error}</p> : null}
+            {error && <p className="text-xs text-rose-600">{error}</p>}
+            {message && <p className="text-xs text-emerald-600">{message}</p>}
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full rounded-xl bg-black px-4 py-3 text-sm font-semibold uppercase tracking-wide text-white disabled:opacity-40"
-          >
-            {loading ? "..." : locale === "zh" ? "进入 Magic Agent" : "Enter Magic Agent"}
-          </button>
-        </form>
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full rounded-xl bg-black px-4 py-3 text-sm font-semibold uppercase tracking-wide text-white disabled:opacity-40"
+            >
+              {loading ? "..." : isZh ? "注册" : "Create Account"}
+            </button>
+
+            <p className="text-center text-sm text-zinc-500">
+              {isZh ? "已有账号？" : "Already have an account? "}
+              <button
+                type="button"
+                onClick={() => { setMode("login"); setError(null); setMessage(null); }}
+                className="font-semibold text-black underline"
+              >
+                {isZh ? "登录" : "Sign In"}
+              </button>
+            </p>
+          </form>
+        )}
       </div>
     </div>
   );

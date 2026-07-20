@@ -1,5 +1,5 @@
 import { cosineSimilarity, embedText } from "@/lib/ai/embedding";
-import { memoryDb } from "@/lib/data/memory-db";
+import { supabaseDb } from "@/lib/data/supabase-db";
 import { Locale, VideoRecommendation } from "@/lib/domain/types";
 import { recommendationConfig } from "@/lib/recommendation/config";
 import { inferDifficulty, pickTags } from "@/lib/recommendation/providers/common";
@@ -124,7 +124,7 @@ export async function rankAndFuseRecommendations(input: RankInput): Promise<Vide
   const topicShifted = detectTopicShift(queryTags, historyTags);
 
   const recentIds = new Set(
-    await memoryDb.listRecentlyRecommendedVideoIdsByThread(
+    await supabaseDb.listRecentlyRecommendedVideoIdsByThread(
       threadId,
       userId,
       recommendationConfig.recentHistoryWindow
