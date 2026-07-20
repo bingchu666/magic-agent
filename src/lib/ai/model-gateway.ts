@@ -1,11 +1,12 @@
 import OpenAI from "openai";
-import { ChatIntent, Locale } from "@/lib/domain/types";
+import { ChatHistoryMessage, ChatIntent, Locale } from "@/lib/domain/types";
+import { normalizeChatHistory } from "@/lib/agent/history";
 
 type GenerationInput = {
   locale: Locale;
   intent: ChatIntent;
   userMessage: string;
-  history: string;
+  history: ChatHistoryMessage[];
   fileContext: string;
   avoidRepeatOf?: string;
   continuationTarget?: string;
@@ -25,7 +26,7 @@ const HISTORY_MAX_TURNS = Number(process.env.MODEL_HISTORY_TURNS || 30);
 const HISTORY_TURN_MAX_CHARS = Number(process.env.MODEL_HISTORY_TURN_CHARS || 2000);
 const ENABLE_OPENAI_FALLBACK = process.env.OPENAI_FALLBACK_ENABLED === "true";
 const DEFAULT_MAGIC_SYSTEM_PROMPT =
-  "You are MagicAgent, a professional magic-learning and performance coach. Answer the user's latest request directly with practical coaching guidance. Keep continuity across turns, and only continue a prior section when the user explicitly asks to continue.";
+  "You are MagicAgent, a professional magic-learning and performance coach. Answer the user's latest request directly with practical coaching guidance. Treat the supplied conversation history as authoritative context: remember facts, preferences, names, constraints, and earlier decisions within this thread, and resolve follow-up references from that history. Keep continuity across turns, and only continue a prior section when the user explicitly asks to continue.";
 
 function cleanResponseText(input: string) {
   const normalized = input
@@ -78,26 +79,12 @@ function clip(input: string, max: number) {
   return input.slice(input.length - max);
 }
 
-function historyToMessages(history: string): Array<{ role: "user" | "assistant"; content: string }> {
-  const lines = history
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(-HISTORY_MAX_TURNS);
-
-  const out: Array<{ role: "user" | "assistant"; content: string }> = [];
-  for (const line of lines) {
-    if (line.startsWith("USER:")) {
-      const content = clip(line.replace(/^USER:\s*/, "").trim(), HISTORY_TURN_MAX_CHARS);
-      if (content) out.push({ role: "user", content });
-      continue;
-    }
-    if (line.startsWith("ASSISTANT:")) {
-      const content = clip(line.replace(/^ASSISTANT:\s*/, "").trim(), HISTORY_TURN_MAX_CHARS);
-      if (content) out.push({ role: "assistant", content });
-    }
-  }
-  return out;
+function historyToMessages(history: ChatHistoryMessage[]) {
+  return normalizeChatHistory(history, {
+    maxTurns: HISTORY_MAX_TURNS,
+    maxTurnChars: HISTORY_TURN_MAX_CHARS,
+    maxTotalChars: HISTORY_CLIP_CHARS,
+  });
 }
 
 function buildMessages(input: GenerationInput) {
@@ -108,7 +95,7 @@ function buildMessages(input: GenerationInput) {
     messages.push({ role: "system", content: system });
   }
 
-  messages.push(...historyToMessages(clip(input.history || "", HISTORY_CLIP_CHARS)));
+  messages.push(...historyToMessages(input.history));
 
   const userParts = [
     input.userMessage,

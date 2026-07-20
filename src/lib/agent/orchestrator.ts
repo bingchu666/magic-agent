@@ -1,8 +1,9 @@
 import { generateWithGateway, generateWithGatewayStream } from "@/lib/ai/model-gateway";
 import { buildContext } from "@/lib/agent/context";
+import { normalizeChatHistory, removeDuplicateCurrentUserTurn } from "@/lib/agent/history";
 import { detectIntent } from "@/lib/agent/intent";
 import { memoryDb } from "@/lib/data/memory-db";
-import { AgentOutput, ChatStreamRequest, Locale, Message } from "@/lib/domain/types";
+import { AgentOutput, ChatHistoryMessage, ChatStreamRequest, Locale, Message } from "@/lib/domain/types";
 
 type OrchestratorInput = ChatStreamRequest & {
   userId: string;
@@ -54,22 +55,11 @@ function summarizeThreadTitle(message: string, locale: Locale) {
   return plain.length > 28 ? `${snippet}...` : snippet;
 }
 
-function extractLatestAssistantFromHistory(history: string | undefined) {
-  if (!history) return null;
-  const lines = history
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(-20);
-
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const line = lines[i];
-    if (/^ASSISTANT:/i.test(line)) {
-      const content = line.replace(/^ASSISTANT:\s*/i, "").trim();
-      return content || null;
-    }
-  }
-  return null;
+function extractLatestAssistantFromHistory(history: ChatHistoryMessage[] | undefined) {
+  return [...(history ?? [])]
+    .reverse()
+    .find((message) => message.role === "assistant")
+    ?.content.trim() || null;
 }
 
 function parseRequestedPoint(text: string) {
@@ -138,15 +128,6 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
     .find((message) => message.role === "assistant")
     ?.content || extractLatestAssistantFromHistory(input.clientHistory) || undefined;
 
-  const userMessage = memoryDb.createMessage({
-    threadId: thread.id,
-    userId: input.userId,
-    role: "user",
-    content: input.userMessage,
-    locale: requestedLocale,
-    attachmentIds: input.attachmentIds,
-  });
-
   const intent = detectIntent(input.userMessage);
   const safety = { mode: "allow" as const };
   const context = buildContext({
@@ -155,9 +136,22 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
     locale: requestedLocale,
     attachmentIds: input.attachmentIds,
   });
-  const history = input.clientHistory?.trim()
-    ? input.clientHistory.trim().slice(-5000)
-    : context.history;
+  const clientHistory = removeDuplicateCurrentUserTurn(
+    normalizeChatHistory(input.clientHistory),
+    input.userMessage
+  );
+  const history = clientHistory.length > 0
+    ? clientHistory
+    : normalizeChatHistory(context.history);
+
+  const userMessage = memoryDb.createMessage({
+    threadId: thread.id,
+    userId: input.userId,
+    role: "user",
+    content: input.userMessage,
+    locale: requestedLocale,
+    attachmentIds: input.attachmentIds,
+  });
   const requestedPoint = parseRequestedPoint(input.userMessage);
   const continuationTarget = extractPointSegment(previousAssistantReply, requestedPoint);
   const followUp = isExplicitFollowUp(input.userMessage);

@@ -18,9 +18,11 @@ export function buildContext(params: {
   );
 
   const history = messages
-    .map((message) => `${message.role.toUpperCase()}: ${stripMarkdown(message.content)}`)
-    .join("\n")
-    .slice(-8000);
+    .filter((message) => message.role === "user" || message.role === "assistant")
+    .map((message) => ({
+      role: message.role as "user" | "assistant",
+      content: stripMarkdown(message.content),
+    }));
 
   const fileContext = uniqueInsights
     .map((insight) => `${insight.kind}: ${insight.content}`)
