@@ -4,8 +4,8 @@ import { jsonError, jsonOk } from "@/lib/ui/api";
 
 export async function POST(req: Request, { params }: { params: { fileId: string } }) {
   try {
-    const session = assertSession(req);
-    const job = enqueueFileProcessing({
+    const session = await assertSession(req);
+    const job = await enqueueFileProcessing({
       fileId: params.fileId,
       userId: session.id,
     });

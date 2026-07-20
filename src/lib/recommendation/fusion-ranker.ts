@@ -1,5 +1,5 @@
 import { cosineSimilarity, embedText } from "@/lib/ai/embedding";
-import { memoryDb } from "@/lib/data/memory-db";
+import { supabaseDb } from "@/lib/data/supabase-db";
 import { Locale, VideoRecommendation } from "@/lib/domain/types";
 import { recommendationConfig } from "@/lib/recommendation/config";
 import { inferDifficulty, pickTags } from "@/lib/recommendation/providers/common";
@@ -111,7 +111,7 @@ function diversify(scored: ScoredCandidate[], topN: number) {
   return selected.slice(0, topN);
 }
 
-export function rankAndFuseRecommendations(input: RankInput): VideoRecommendation[] {
+export async function rankAndFuseRecommendations(input: RankInput): Promise<VideoRecommendation[]> {
   const { locale, userId, threadId, userMessage, conversationText, providerWeights, limit, goalTopic } = input;
   const unique = dedupeCandidates(input.candidates);
   if (!unique.length) return [];
@@ -124,7 +124,7 @@ export function rankAndFuseRecommendations(input: RankInput): VideoRecommendatio
   const topicShifted = detectTopicShift(queryTags, historyTags);
 
   const recentIds = new Set(
-    memoryDb.listRecentlyRecommendedVideoIdsByThread(
+    await supabaseDb.listRecentlyRecommendedVideoIdsByThread(
       threadId,
       userId,
       recommendationConfig.recentHistoryWindow

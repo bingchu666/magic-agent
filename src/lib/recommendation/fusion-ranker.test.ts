@@ -3,10 +3,10 @@ import { resetMemoryDbForTests } from "@/lib/data/memory-db";
 import { rankAndFuseRecommendations } from "@/lib/recommendation/fusion-ranker";
 
 describe("rankAndFuseRecommendations", () => {
-  it("dedupes by normalized url and keeps diversified sources", () => {
+  it("dedupes by normalized url and keeps diversified sources", async () => {
     resetMemoryDbForTests();
 
-    const items = rankAndFuseRecommendations({
+    const items = await rankAndFuseRecommendations({
       locale: "zh",
       userId: "u1",
       threadId: "t1",
@@ -30,6 +30,7 @@ describe("rankAndFuseRecommendations", () => {
           difficulty: "beginner",
           language: "en",
           verified: true,
+          playableCheckedAt: "2026-01-01T00:00:00.000Z",
           rawScore: 0.8,
         },
         {
@@ -43,6 +44,7 @@ describe("rankAndFuseRecommendations", () => {
           difficulty: "beginner",
           language: "zh",
           verified: true,
+          playableCheckedAt: "2026-01-01T00:00:00.000Z",
           rawScore: 0.79,
         },
         {
@@ -56,6 +58,7 @@ describe("rankAndFuseRecommendations", () => {
           difficulty: "beginner",
           language: "en",
           verified: true,
+          playableCheckedAt: "2026-01-01T00:00:00.000Z",
           rawScore: 0.75,
         },
         {
@@ -69,6 +72,7 @@ describe("rankAndFuseRecommendations", () => {
           difficulty: "beginner",
           language: "zh",
           verified: true,
+          playableCheckedAt: "2026-01-01T00:00:00.000Z",
           rawScore: 0.7,
         },
       ],

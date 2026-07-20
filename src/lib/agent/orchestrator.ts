@@ -1,7 +1,7 @@
 import { generateWithGateway, generateWithGatewayStream } from "@/lib/ai/model-gateway";
 import { buildContext } from "@/lib/agent/context";
 import { detectIntent } from "@/lib/agent/intent";
-import { memoryDb } from "@/lib/data/memory-db";
+import { supabaseDb } from "@/lib/data/supabase-db";
 import { AgentOutput, ChatStreamRequest, Locale, Message } from "@/lib/domain/types";
 
 type OrchestratorInput = ChatStreamRequest & {
@@ -116,7 +116,7 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
   const requestedLocale: Locale = input.locale === "en" ? "en" : "zh";
   const locale: Locale = detectReplyLocale(input.userMessage, requestedLocale);
 
-  memoryDb.ensureUser({
+  await supabaseDb.ensureUser({
     id: input.userId,
     name: input.userName,
     role: input.userRole,
@@ -124,21 +124,21 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
   });
 
   const thread =
-    input.threadId && memoryDb.getThread(input.threadId)
-      ? memoryDb.getThread(input.threadId)
-      : memoryDb.createThread(input.userId, summarizeThreadTitle(input.userMessage, locale));
+    input.threadId && await supabaseDb.getThread(input.threadId)
+      ? await supabaseDb.getThread(input.threadId)
+      : await supabaseDb.createThread(input.userId, summarizeThreadTitle(input.userMessage, locale));
 
   if (!thread) {
     throw new Error("Failed to initialize thread");
   }
   if (input.onThreadReady) input.onThreadReady(thread.id);
 
-  const previousAssistantReply = [...memoryDb.listMessages(thread.id)]
+  const previousAssistantReply = [...await supabaseDb.listMessages(thread.id)]
     .reverse()
     .find((message) => message.role === "assistant")
     ?.content || extractLatestAssistantFromHistory(input.clientHistory) || undefined;
 
-  const userMessage = memoryDb.createMessage({
+  const userMessage = await supabaseDb.createMessage({
     threadId: thread.id,
     userId: input.userId,
     role: "user",
@@ -149,7 +149,7 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
 
   const intent = detectIntent(input.userMessage);
   const safety = { mode: "allow" as const };
-  const context = buildContext({
+  const context = await buildContext({
     threadId: thread.id,
     userId: input.userId,
     locale: requestedLocale,
@@ -193,7 +193,7 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
     provider: generation.provider,
   };
 
-  const assistantMessage = memoryDb.createMessage({
+  const assistantMessage = await supabaseDb.createMessage({
     threadId: thread.id,
     userId: input.userId,
     role: "assistant",
@@ -201,7 +201,7 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
     locale,
   });
 
-  memoryDb.createEvent({
+  await supabaseDb.createEvent({
     userId: input.userId,
     name: "chat_completion",
     payload: {

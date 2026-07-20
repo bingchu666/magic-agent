@@ -1,5 +1,6 @@
 import { assertSession } from "@/features/auth/session.server";
 import { runAgentOrchestration } from "@/lib/agent/orchestrator";
+import { withRequestCookie } from "@/lib/data/supabase-db";
 import { ChatSsePayloadMap, ChatStreamRequest, SseEventType } from "@/lib/domain/types";
 
 function sseLine<T extends SseEventType>(event: T, data: ChatSsePayloadMap[T]) {
@@ -34,17 +35,22 @@ function chunkText(text: string) {
 
 export async function POST(req: Request) {
   try {
-    const session = assertSession(req);
+    const session = await assertSession(req);
     const body = (await req.json()) as ChatStreamRequest;
 
     if (!body?.userMessage || typeof body.userMessage !== "string") {
       return new Response("Missing userMessage", { status: 400 });
     }
 
+    // Capture cookies before entering the ReadableStream —
+    // next/headers cookies() is unavailable inside the stream callback.
+    const cookieHeader = req.headers.get("cookie") || "";
+
     const encoder = new TextEncoder();
 
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
+        await withRequestCookie(cookieHeader, async () => {
         const write = <T extends SseEventType>(event: T, payload: ChatSsePayloadMap[T]) => {
           controller.enqueue(encoder.encode(sseLine(event, payload)));
         };
@@ -117,6 +123,7 @@ export async function POST(req: Request) {
             controller.close();
           }
         }
+        }); // withRequestCookie
       },
       cancel(reason) {
         console.warn("SSE canceled", reason);
