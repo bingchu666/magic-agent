@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import Link from "next/link";
-import { FileAsset, LessonPayload, Message, Thread } from "@/lib/domain/types";
+import { ChatHistoryMessage, FileAsset, LessonPayload, Message, Thread } from "@/lib/domain/types";
 import { createId } from "@/lib/domain/utils";
 import { useSession } from "@/features/auth/session.client";
 import { consumeSseStream } from "@/features/chat-agent/sse";
@@ -28,13 +28,15 @@ function createLocalThread(userId: string, locale: "zh" | "en"): Thread {
   };
 }
 
-function buildClientHistory(messages: UiMessage[]) {
+function buildClientHistory(messages: UiMessage[]): ChatHistoryMessage[] {
   return messages
     .filter((item) => item.role === "user" || item.role === "assistant")
-    .slice(-16)
-    .map((item) => `${item.role === "user" ? "USER" : "ASSISTANT"}: ${item.content}`)
-    .join("\n")
-    .slice(-8000);
+    .filter((item) => item.content.trim().length > 0)
+    .slice(-30)
+    .map((item) => ({
+      role: item.role as "user" | "assistant",
+      content: item.content,
+    }));
 }
 
 async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -293,7 +295,9 @@ export function ChatWorkspace() {
         touchThread(threadId);
       }
 
-      const historyForRequest = buildClientHistory([...messages, userMessage]);
+      // The latest user message is sent separately as userMessage. History only
+      // contains completed prior turns so the model never receives it twice.
+      const historyForRequest = buildClientHistory(messages);
       let streamFailed = false;
 
       const res = await fetch("/api/chat/stream", {

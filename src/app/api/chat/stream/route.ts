@@ -2,6 +2,7 @@ import { assertSession } from "@/features/auth/session.server";
 import { runAgentOrchestration } from "@/lib/agent/orchestrator";
 import { withRequestCookie } from "@/lib/data/supabase-db";
 import { ChatSsePayloadMap, ChatStreamRequest, SseEventType } from "@/lib/domain/types";
+import { normalizeChatHistory } from "@/lib/agent/history";
 
 function sseLine<T extends SseEventType>(event: T, data: ChatSsePayloadMap[T]) {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -66,7 +67,7 @@ export async function POST(req: Request) {
             userMessage: body.userMessage,
             locale: body.locale === "en" ? "en" : "zh",
             attachmentIds: Array.isArray(body.attachmentIds) ? body.attachmentIds : [],
-            clientHistory: typeof body.clientHistory === "string" ? body.clientHistory : undefined,
+            clientHistory: normalizeChatHistory(body.clientHistory),
             userId: session.id,
             userName: session.name,
             userRole: session.role,

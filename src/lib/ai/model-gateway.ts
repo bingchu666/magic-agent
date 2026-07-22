@@ -1,12 +1,14 @@
 import OpenAI from "openai";
-import { ChatIntent, Locale } from "@/lib/domain/types";
+import { ChatHistoryMessage, ChatIntent, Locale } from "@/lib/domain/types";
+import { normalizeChatHistory } from "@/lib/agent/history";
 
 type GenerationInput = {
   locale: Locale;
   intent: ChatIntent;
   userMessage: string;
-  history: string;
+  history: ChatHistoryMessage[];
   fileContext: string;
+  trickContext?: string;
   avoidRepeatOf?: string;
   continuationTarget?: string;
 };
@@ -25,7 +27,7 @@ const HISTORY_MAX_TURNS = Number(process.env.MODEL_HISTORY_TURNS || 30);
 const HISTORY_TURN_MAX_CHARS = Number(process.env.MODEL_HISTORY_TURN_CHARS || 2000);
 const ENABLE_OPENAI_FALLBACK = process.env.OPENAI_FALLBACK_ENABLED === "true";
 const DEFAULT_MAGIC_SYSTEM_PROMPT =
-  "You are MagicAgent, a professional magic-learning and performance coach. Answer the user's latest request directly with practical coaching guidance. Keep continuity across turns, and only continue a prior section when the user explicitly asks to continue.";
+  "You are MagicAgent, a professional magic-learning and performance coach. Answer the user's latest request directly with practical coaching guidance. Keep continuity across turns, and only continue a prior section when the user explicitly asks to continue.Treat the supplied conversation history as authoritative context: remember facts, preferences, names, constraints, and earlier decisions within this thread, and resolve follow-up references from that history. When a 'Trick knowledge base' section is present in the user message, treat it as the authoritative source for trick effects/methods and base your answer on it instead of inventing details from general knowledge. When the message instead says no matching entries were found in the trick knowledge base, do not fabricate a trick method — say plainly that there is no relevant material in the database yet, and only add clearly-labeled general guidance if it's still useful.";
 
 function cleanResponseText(input: string) {
   const normalized = input
@@ -78,26 +80,12 @@ function clip(input: string, max: number) {
   return input.slice(input.length - max);
 }
 
-function historyToMessages(history: string): Array<{ role: "user" | "assistant"; content: string }> {
-  const lines = history
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(-HISTORY_MAX_TURNS);
-
-  const out: Array<{ role: "user" | "assistant"; content: string }> = [];
-  for (const line of lines) {
-    if (line.startsWith("USER:")) {
-      const content = clip(line.replace(/^USER:\s*/, "").trim(), HISTORY_TURN_MAX_CHARS);
-      if (content) out.push({ role: "user", content });
-      continue;
-    }
-    if (line.startsWith("ASSISTANT:")) {
-      const content = clip(line.replace(/^ASSISTANT:\s*/, "").trim(), HISTORY_TURN_MAX_CHARS);
-      if (content) out.push({ role: "assistant", content });
-    }
-  }
-  return out;
+function historyToMessages(history: ChatHistoryMessage[]) {
+  return normalizeChatHistory(history, {
+    maxTurns: HISTORY_MAX_TURNS,
+    maxTurnChars: HISTORY_TURN_MAX_CHARS,
+    maxTotalChars: HISTORY_CLIP_CHARS,
+  });
 }
 
 function buildMessages(input: GenerationInput) {
@@ -108,7 +96,7 @@ function buildMessages(input: GenerationInput) {
     messages.push({ role: "system", content: system });
   }
 
-  messages.push(...historyToMessages(clip(input.history || "", HISTORY_CLIP_CHARS)));
+  messages.push(...historyToMessages(input.history));
 
   const userParts = [
     input.userMessage,
@@ -125,6 +113,15 @@ function buildMessages(input: GenerationInput) {
   }
   if (input.fileContext?.trim()) {
     userParts.push(`\nFile context:\n${clip(input.fileContext, 6000)}`);
+  }
+  if (input.trickContext?.trim()) {
+    userParts.push(
+      `\nTrick knowledge base (most relevant entries retrieved for this question — prioritize this over your own knowledge):\n${clip(input.trickContext, 6000)}`
+    );
+  } else {
+    userParts.push(
+      "\nTrick knowledge base: no matching entries were found for this question. Do not fabricate a trick method — tell the user honestly that there is no relevant material in the database yet."
+    );
   }
 
   messages.push({
