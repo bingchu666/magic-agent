@@ -201,7 +201,7 @@ export function ChatWorkspace() {
     initializedRef.current = true;
 
     loadFiles().catch((err) => setError(err.message));
-  }, [user?.id]);
+  }, [user?.id, locale]);
 
   useEffect(() => {
     if (!activeThreadId) {
@@ -298,8 +298,6 @@ export function ChatWorkspace() {
       // The latest user message is sent separately as userMessage. History only
       // contains completed prior turns so the model never receives it twice.
       const historyForRequest = buildClientHistory(messages);
-      let streamFailed = false;
-
       const res = await fetch("/api/chat/stream", {
         method: "POST",
         headers: {
@@ -315,8 +313,16 @@ export function ChatWorkspace() {
       });
 
       if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(text || "Failed to stream response");
+        const contentType = res.headers.get("content-type") || "";
+        const text = contentType.includes("text/html")
+          ? ""
+          : await res.text().catch(() => "");
+        throw new Error(
+          text ||
+            (locale === "zh"
+              ? `聊天服务暂时不可用（${res.status}）`
+              : `Chat service is temporarily unavailable (${res.status})`)
+        );
       }
 
       await consumeSseStream(res, {
@@ -352,14 +358,9 @@ export function ChatWorkspace() {
         video_recommendations: () => {},
         done: () => {},
         error: (payload) => {
-          streamFailed = true;
           setError(payload.message);
         },
       });
-
-      if (!streamFailed) {
-        await loadFiles();
-      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";
       const fallbackText = locale === "zh" ? "请求失败，请稍后重试。" : "Request failed. Please retry.";

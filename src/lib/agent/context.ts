@@ -1,19 +1,34 @@
-import { Locale } from "@/lib/domain/types";
+import { ChatHistoryMessage, Locale } from "@/lib/domain/types";
 import { supabaseDb } from "@/lib/data/supabase-db";
 import { stripMarkdown } from "@/lib/domain/utils";
+import { retrieveOptionalKnowledge } from "@/lib/agent/knowledge-retrieval";
 
-function formatTrickChunk(row: Record<string, unknown>): string | null {
-  const content = typeof row.content === "string" ? row.content.trim() : "";
-  if (!content) return null;
+const OPTIONAL_CONTEXT_TIMEOUT_MS = 800;
 
-  const title =
-    typeof row.title === "string" && row.title.trim()
-      ? row.title.trim()
-      : typeof row.trick_title === "string"
-        ? row.trick_title.trim()
-        : "";
-
-  return title ? `${title}：\n${content}` : content;
+async function loadOptionalContext<T>(
+  label: string,
+  operation: Promise<T>,
+  fallback: T
+): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<T>((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error(`${label} timed out`)),
+          OPTIONAL_CONTEXT_TIMEOUT_MS
+        );
+      }),
+    ]);
+  } catch (error) {
+    console.warn(`Optional ${label} unavailable; continuing without it`, {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return fallback;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 export async function buildContext(params: {
@@ -22,47 +37,58 @@ export async function buildContext(params: {
   locale: Locale;
   userMessage: string;
   attachmentIds?: string[];
+  clientHistory?: ChatHistoryMessage[];
 }) {
-  const { threadId, userId, locale, userMessage, attachmentIds = [] } = params;
-  const allMessages = await supabaseDb.listMessages(threadId);
-  const messages = allMessages.slice(-16);
-  const explicitInsights = await supabaseDb.listFileInsightsByIds(userId, attachmentIds);
-  const recentInsights = await supabaseDb.listRecentFileInsights(userId, locale, 3);
+  const {
+    threadId,
+    userId,
+    userMessage,
+    attachmentIds = [],
+    clientHistory = [],
+  } = params;
+  const [storedMessages, explicitInsights, retrievedKnowledge] =
+    await Promise.all([
+      clientHistory.length > 0
+        ? Promise.resolve([])
+        : loadOptionalContext(
+            "stored conversation history",
+            supabaseDb.listMessages(threadId),
+            []
+          ),
+      loadOptionalContext(
+        "attached file insights",
+        supabaseDb.listFileInsightsByIds(userId, attachmentIds),
+        []
+      ),
+      retrieveOptionalKnowledge({
+        query: userMessage,
+        search: (query) => supabaseDb.searchTrickChunks(query),
+      }),
+    ]);
+  const messages = storedMessages.slice(-16);
 
-  const uniqueInsights = [...explicitInsights, ...recentInsights].filter(
+  const uniqueInsights = explicitInsights.filter(
     (insight, idx, arr) => idx === arr.findIndex((item) => item.id === insight.id)
   );
 
-  const history = messages
-  .filter((message) => message.role === "user" || message.role === "assistant")
-  .map((message) => ({
-    role: message.role as "user" | "assistant",
-    content: stripMarkdown(message.content),
-  }));
+  const history = clientHistory.length > 0
+    ? clientHistory
+    : messages
+        .filter((message) => message.role === "user" || message.role === "assistant")
+        .map((message) => ({
+          role: message.role as "user" | "assistant",
+          content: stripMarkdown(message.content),
+        }));
 
   const fileContext = uniqueInsights
     .map((insight) => `${insight.kind}: ${insight.content}`)
     .join("\n")
     .slice(-3000);
 
-  // Trick knowledge base (RAG): retrieve chunks relevant to the current
-  // question so the model can ground its answer instead of inventing one.
-  // Never let a search/embedding failure break the chat turn.
-  const trickChunks = await supabaseDb.searchTrickChunks(userMessage).catch((error) => {
-    console.error("searchTrickChunks failed", { userMessage, error });
-    return [] as Record<string, unknown>[];
-  });
-
-  const trickContext = trickChunks
-    .map(formatTrickChunk)
-    .filter((item): item is string => Boolean(item))
-    .join("\n\n---\n\n")
-    .slice(0, 4000);
-
   return {
     history,
     fileContext,
-    trickContext,
+    retrievedKnowledge,
     usedFileInsights: uniqueInsights,
   };
 }

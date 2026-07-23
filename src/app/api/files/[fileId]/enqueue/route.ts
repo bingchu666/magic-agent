@@ -2,11 +2,12 @@ import { assertSession } from "@/features/auth/session.server";
 import { enqueueFileProcessing } from "@/features/file-intelligence/processor";
 import { jsonError, jsonOk } from "@/lib/ui/api";
 
-export async function POST(req: Request, { params }: { params: { fileId: string } }) {
+export async function POST(req: Request, { params }: { params: Promise<{ fileId: string }> }) {
   try {
+    const { fileId } = await params;
     const session = await assertSession(req);
     const job = await enqueueFileProcessing({
-      fileId: params.fileId,
+      fileId,
       userId: session.id,
     });
 

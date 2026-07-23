@@ -2,28 +2,33 @@ import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { SessionUser, supabaseUserToSessionUser } from "@/features/auth/session.types";
 
-function getServerSupabase() {
-  const cookieStore = cookies();
+async function getServerSupabase() {
+  const cookieStore = await cookies();
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        get(name: string) {
-          return cookieStore.get(name)?.value;
+        getAll() {
+          return cookieStore.getAll();
         },
-        set(_name: string, _value: string, _options: Record<string, unknown>) {},
-        remove(_name: string, _options: Record<string, unknown>) {},
+        setAll() {},
       },
     }
   );
 }
 
 export async function readSession(): Promise<SessionUser | null> {
-  const supabase = getServerSupabase();
+  const supabase = await getServerSupabase();
   const { data } = await supabase.auth.getUser();
   if (!data.user) return null;
-  return supabaseUserToSessionUser(data.user);
+  const { data: profile, error } = await supabase
+    .from("profiles")
+    .select("name, role, locale")
+    .eq("id", data.user.id)
+    .maybeSingle();
+  if (error) throw new Error(`SESSION_PROFILE_ERROR: ${error.message}`);
+  return supabaseUserToSessionUser(data.user, profile);
 }
 
 /**
@@ -31,7 +36,8 @@ export async function readSession(): Promise<SessionUser | null> {
  * For API routes, delegates to readSession() which reads cookies via next/headers —
  * this works because API routes share the same request context as middleware.
  */
-export async function readSessionFromRequest(_req: Request): Promise<SessionUser | null> {
+export async function readSessionFromRequest(req: Request): Promise<SessionUser | null> {
+  void req;
   return readSession();
 }
 

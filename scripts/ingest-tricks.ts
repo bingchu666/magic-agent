@@ -23,11 +23,11 @@ import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 import matter from "gray-matter";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { embedTrickText } from "../src/lib/ai/trick-embedding";
 
 const CONTENT_DIR = path.join(process.cwd(), "content");
-const TRICK_SEPARATOR = /\n===\n/;
+const TRICK_SEPARATOR = /\r?\n(?:[ \t]*===[ \t]*\r?\n)+(?:\r?\n)*/;
 const DRY_RUN = process.argv.includes("--dry-run");
 
 // Voyage AI's free tier (no payment method on file) is limited to ~3 requests
@@ -38,7 +38,53 @@ const DRY_RUN = process.argv.includes("--dry-run");
 const DELAY_BETWEEN_TRICKS_MS = 21_000; // ~2.8 requests/minute
 const MAX_RETRIES = 4;
 
-const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_KEY!);
+type IngestDatabase = {
+  public: {
+    Tables: {
+      tricks: {
+        Row: { id: string; title: string };
+        Insert: {
+          title: string;
+          difficulty: unknown;
+          props_needed: unknown[];
+          tags: unknown[];
+          source: string;
+          effect_description: string;
+          method_summary: string;
+        };
+        Update: Record<string, unknown>;
+        Relationships: [];
+      };
+      trick_chunks: {
+        Row: { id: string; trick_id: string };
+        Insert: { trick_id: string; content: string; embedding: number[] };
+        Update: Record<string, unknown>;
+        Relationships: [];
+      };
+    };
+    Views: Record<string, never>;
+    Functions: Record<string, never>;
+    Enums: Record<string, never>;
+    CompositeTypes: Record<string, never>;
+  };
+};
+
+let supabase: SupabaseClient<IngestDatabase> | null = null;
+
+function getSupabaseAdminClient() {
+  if (supabase) return supabase;
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SERVICE_KEY;
+  if (!url || !key) {
+    throw new Error(
+      "Missing Supabase credentials. Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY."
+    );
+  }
+  supabase = createClient<IngestDatabase>(url, key, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+  return supabase;
+}
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -69,9 +115,23 @@ async function embedWithRetry(text: string, inputType: "document" | "query", lab
 
 async function ingestTrick(meta: Record<string, unknown>, body: string, fallbackLabel: string) {
   const title = (meta.title as string) ?? fallbackLabel;
+  const [effectPart, ...methodParts] = body.split("Method summary:");
+  const effectDescription = (effectPart ?? "").replace(/^\s*Effect:\s*/i, "").trim();
+  const methodSummary = methodParts.length > 0
+    ? methodParts.join("Method summary:").trim()
+    : body.trim();
+  const trickPayload = {
+    title,
+    difficulty: meta.difficulty ?? "beginner",
+    props_needed: Array.isArray(meta.props) ? meta.props : [],
+    tags: Array.isArray(meta.tags) ? meta.tags : [],
+    source: typeof meta.source === "string" ? meta.source : "",
+    effect_description: effectDescription,
+    method_summary: methodSummary,
+  };
 
   if (DRY_RUN) {
-    const effectPreview = (body.split("Method summary:")[0]?.replace("Effect:", "").trim() ?? "").slice(0, 120);
+    const effectPreview = effectDescription.slice(0, 120);
     console.log(`  [dry-run] Would insert "${title}"`);
     console.log(`      difficulty: ${meta.difficulty ?? "(default: beginner)"}`);
     console.log(`      props: ${JSON.stringify(meta.props ?? [])}`);
@@ -82,34 +142,47 @@ async function ingestTrick(meta: Record<string, unknown>, body: string, fallback
     return;
   }
 
-  // Skip if a trick with this exact title already exists
-  const { data: existing } = await supabase
+  const db = getSupabaseAdminClient();
+  const { data: existing, error: existingError } = await db
     .from("tricks")
     .select("id")
     .eq("title", title)
     .maybeSingle();
+  if (existingError) throw new Error(`Failed to check "${title}": ${existingError.message}`);
 
   if (existing) {
-    console.log(`  ○ Skipped "${title}" (already exists)`);
-    return;
+    const { data: existingChunk, error: chunkLookupError } = await db
+      .from("trick_chunks")
+      .select("id")
+      .eq("trick_id", existing.id)
+      .limit(1)
+      .maybeSingle();
+    if (chunkLookupError) {
+      throw new Error(`Failed to check embedding for "${title}": ${chunkLookupError.message}`);
+    }
+    if (existingChunk) {
+      console.log(`  ○ Skipped "${title}" (already exists with embedding)`);
+      return;
+    }
+    console.log(`  ↻ Repairing missing embedding for "${title}"`);
   }
 
-  const { data: trick, error: trickError } = await supabase
-    .from("tricks")
-    .insert({
-      title,
-      difficulty: meta.difficulty ?? "beginner",
-      props_needed: meta.props ?? [],
-      tags: meta.tags ?? [],
-      source: meta.source ?? "",
-      effect_description: body.split("Method summary:")[0]?.replace("Effect:", "").trim() ?? "",
-      method_summary: body.trim(),
-    })
-    .select()
-    .single();
-
-  if (trickError || !trick) {
-    console.error(`  ✗ Failed to insert trick "${title}":`, trickError?.message);
+  // Keyword retrieval can use the curated row without an embedding. Persist
+  // it now and let a later run repair the vector when Voyage is configured.
+  if (!process.env.VOYAGE_API_KEY) {
+    if (existing) {
+      console.log(`  ◌ Kept "${title}" keyword-searchable; embedding is still pending`);
+      return;
+    }
+    const { error: keywordOnlyError } = await db.from("tricks").insert(trickPayload);
+    if (keywordOnlyError) {
+      console.error(
+        `  ✗ Failed to insert keyword-searchable trick "${title}":`,
+        keywordOnlyError.message
+      );
+      return;
+    }
+    console.log(`  ✓ Ingested "${title}" for keyword search (embedding pending)`);
     return;
   }
 
@@ -117,18 +190,36 @@ async function ingestTrick(meta: Record<string, unknown>, body: string, fallback
   try {
     embedding = await embedWithRetry(body, "document", title);
   } catch (err) {
-    console.error(`  ✗ Trick "${title}" inserted, but embedding permanently failed (row left without a chunk):`, (err as Error).message);
+    console.error(`  ✗ Embedding failed for "${title}"; no incomplete row was created:`, (err as Error).message);
     return;
   }
 
-  const { error: chunkError } = await supabase.from("trick_chunks").insert({
-    trick_id: trick.id,
+  let trickId = existing?.id as string | undefined;
+  let insertedNewTrick = false;
+  if (!trickId) {
+    const { data: trick, error: trickError } = await db
+      .from("tricks")
+      .insert(trickPayload)
+      .select("id")
+      .single();
+
+    if (trickError || !trick) {
+      console.error(`  ✗ Failed to insert trick "${title}":`, trickError?.message);
+      return;
+    }
+    trickId = trick.id;
+    insertedNewTrick = true;
+  }
+
+  const { error: chunkError } = await db.from("trick_chunks").insert({
+    trick_id: trickId,
     content: body.trim(),
     embedding,
   });
 
   if (chunkError) {
-    console.error(`  ✗ Trick "${title}" inserted, but chunk/embedding failed:`, chunkError.message);
+    if (insertedNewTrick) await db.from("tricks").delete().eq("id", trickId);
+    console.error(`  ✗ Failed to save embedding for "${title}":`, chunkError.message);
     return;
   }
 
@@ -151,7 +242,11 @@ async function ingestFile(filePath: string) {
   console.log(`  Found ${sections.length} section(s) in this file.`);
 
   for (let index = 0; index < sections.length; index += 1) {
-    const section = sections[index];
+    const rawSection = sections[index];
+    const frontmatterStart = rawSection.search(/^---[ \t]*$/m);
+    const section = frontmatterStart >= 0
+      ? rawSection.slice(frontmatterStart)
+      : rawSection;
     let meta: Record<string, unknown>;
     let body: string;
     try {
@@ -198,4 +293,7 @@ async function main() {
   console.log(`\nDone.${DRY_RUN ? " (dry run — nothing was written)" : ""}`);
 }
 
-main();
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : error);
+  process.exitCode = 1;
+});

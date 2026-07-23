@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { Locale } from "@/lib/domain/types";
 import { SessionUser, supabaseUserToSessionUser } from "@/features/auth/session.types";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
@@ -16,14 +16,6 @@ type SessionContextValue = {
 const SessionContext = createContext<SessionContextValue | null>(null);
 const LOCALE_STORAGE_KEY = "magic_locale_v1";
 
-function getPreferredLocale(): Locale {
-  if (typeof window === "undefined") return "zh";
-  const saved = window.localStorage.getItem(LOCALE_STORAGE_KEY);
-  if (saved === "zh" || saved === "en") return saved;
-  const lang = (navigator.language || "").toLowerCase();
-  return lang.startsWith("zh") ? "zh" : "en";
-}
-
 function persistPreferredLocale(locale: Locale) {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(LOCALE_STORAGE_KEY, locale);
@@ -32,30 +24,42 @@ function persistPreferredLocale(locale: Locale) {
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<SessionUser | null>(null);
   const [loading, setLoading] = useState(true);
-  const supabase = getSupabaseBrowserClient();
+  const supabase = useMemo(() => getSupabaseBrowserClient(), []);
 
-  const refresh = async () => {
+  const loadUser = useCallback(async (current: Awaited<ReturnType<typeof supabase.auth.getUser>>["data"]["user"]) => {
+    if (!current) return null;
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("name, role, locale")
+      .eq("id", current.id)
+      .maybeSingle();
+    return supabaseUserToSessionUser(current, profile);
+  }, [supabase]);
+
+  const refresh = useCallback(async () => {
     const { data } = await supabase.auth.getSession();
     const current = data.session?.user ?? null;
-    setUser(current ? supabaseUserToSessionUser(current) : null);
-  };
+    setUser(await loadUser(current));
+  }, [loadUser, supabase]);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
+    supabase.auth.getSession().then(async ({ data }) => {
       const u = data.session?.user ?? null;
-      setUser(u ? supabaseUserToSessionUser(u) : null);
+      setUser(await loadUser(u));
       setLoading(false);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       const u = session?.user ?? null;
-      setUser(u ? supabaseUserToSessionUser(u) : null);
+      setTimeout(() => {
+        loadUser(u).then(setUser);
+      }, 0);
     });
 
     return () => subscription.unsubscribe();
-  }, []);
+  }, [loadUser, supabase]);
 
-  const setLocale = async (locale: Locale) => {
+  const setLocale = useCallback(async (locale: Locale) => {
     persistPreferredLocale(locale);
     if (!user) return;
 
@@ -63,21 +67,23 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     setUser((prev) => (prev ? { ...prev, locale } : prev));
 
     try {
-      await supabase.auth.updateUser({ data: { locale } });
-      await supabase.from("profiles").update({ locale }).eq("id", user.id);
+      const { error: authError } = await supabase.auth.updateUser({ data: { locale } });
+      if (authError) throw authError;
+      const { error: profileError } = await supabase.from("profiles").update({ locale }).eq("id", user.id);
+      if (profileError) throw profileError;
     } catch {
       setUser((prev) => (prev ? { ...prev, locale: previous } : prev));
     }
-  };
+  }, [supabase, user]);
 
-  const signOut = async () => {
+  const signOut = useCallback(async () => {
     await supabase.auth.signOut();
     setUser(null);
-  };
+  }, [supabase]);
 
   const value = useMemo(
     () => ({ user, loading, refresh, setLocale, signOut }),
-    [user, loading]
+    [user, loading, refresh, setLocale, signOut]
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

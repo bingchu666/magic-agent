@@ -13,8 +13,9 @@ function asDifficulty(input: unknown): VideoDifficulty | undefined {
   return undefined;
 }
 
-export async function PATCH(req: Request, { params }: { params: { id: string } }) {
+export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const { id } = await params;
     const admin = await assertAdmin(req);
     const body = (await req.json()) as {
       title?: string;
@@ -26,7 +27,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       status?: "draft" | "published";
     };
 
-    const video = await supabaseDb.updateVideo(params.id, {
+    const video = await supabaseDb.updateVideo(id, {
       title: typeof body.title === "string" ? body.title.trim() : undefined,
       description: typeof body.description === "string" ? body.description.trim() : undefined,
       url: typeof body.url === "string" ? body.url.trim() : undefined,

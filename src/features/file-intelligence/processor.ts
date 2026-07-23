@@ -128,12 +128,14 @@ export async function enqueueFileProcessing(params: { fileId: string; userId: st
 
   if (!activeJobs.has(job.id)) {
     activeJobs.add(job.id);
-    setTimeout(() => {
-      runProcessing(job.id).finally(() => {
-        activeJobs.delete(job.id);
-      });
-    }, 300);
+    try {
+      // Finish inside the request lifetime. Detached timers are not reliable in
+      // serverless runtimes and lose the authenticated Supabase request context.
+      await runProcessing(job.id);
+    } finally {
+      activeJobs.delete(job.id);
+    }
   }
 
-  return job;
+  return await supabaseDb.getFileJob(job.id) ?? job;
 }

@@ -2,10 +2,11 @@ import { assertSession } from "@/features/auth/session.server";
 import { supabaseDb } from "@/lib/data/supabase-db";
 import { jsonError, jsonOk } from "@/lib/ui/api";
 
-export async function DELETE(req: Request, { params }: { params: { threadId: string } }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ threadId: string }> }) {
   try {
+    const { threadId } = await params;
     const session = await assertSession(req);
-    const deleted = await supabaseDb.deleteThread(params.threadId, session.id);
+    const deleted = await supabaseDb.deleteThread(threadId, session.id);
     if (!deleted) {
       return jsonError("THREAD_NOT_FOUND", 404);
     }

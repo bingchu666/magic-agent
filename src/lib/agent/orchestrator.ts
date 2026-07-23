@@ -7,8 +7,6 @@ import { normalizeChatHistory, removeDuplicateCurrentUserTurn } from "@/lib/agen
 
 type OrchestratorInput = ChatStreamRequest & {
   userId: string;
-  userName: string;
-  userRole: "user" | "admin";
   onThreadReady?: (threadId: string) => void;
   onModelToken?: (text: string) => void;
 };
@@ -106,47 +104,46 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
   const requestedLocale: Locale = input.locale === "en" ? "en" : "zh";
   const locale: Locale = detectReplyLocale(input.userMessage, requestedLocale);
 
-  await supabaseDb.ensureUser({
-    id: input.userId,
-    name: input.userName,
-    role: input.userRole,
-    locale: requestedLocale,
-  });
-
-  const thread =
-    input.threadId && await supabaseDb.getThread(input.threadId)
-      ? await supabaseDb.getThread(input.threadId)
-      : await supabaseDb.createThread(input.userId, summarizeThreadTitle(input.userMessage, locale));
+  // The route has already authenticated the session and loaded its trusted
+  // profile. Avoid repeating that database read on every chat turn.
+  const requestedThread = input.threadId
+    ? await supabaseDb.getThread(input.threadId)
+    : null;
+  const thread = requestedThread?.userId === input.userId
+    ? requestedThread
+    : await supabaseDb.createThread(
+      input.userId,
+      summarizeThreadTitle(input.userMessage, locale)
+    );
 
   if (!thread) {
     throw new Error("Failed to initialize thread");
   }
   if (input.onThreadReady) input.onThreadReady(thread.id);
 
-  const previousAssistantReply = [...await supabaseDb.listMessages(thread.id)]
-    .reverse()
-    .find((message) => message.role === "assistant")
-    ?.content || extractLatestAssistantFromHistory(input.clientHistory) || undefined;
-
   const intent = detectIntent(input.userMessage);
   const safety = { mode: "allow" as const };
+  const clientHistory = removeDuplicateCurrentUserTurn(
+    normalizeChatHistory(input.clientHistory),
+    input.userMessage
+  );
   const context = await buildContext({
     threadId: thread.id,
     userId: input.userId,
     locale: requestedLocale,
     userMessage: input.userMessage,
     attachmentIds: input.attachmentIds,
+    clientHistory,
   });
 
-  const clientHistory = removeDuplicateCurrentUserTurn(
-    normalizeChatHistory(input.clientHistory),
-    input.userMessage
-  );
   const history = clientHistory.length > 0
     ? clientHistory
     : normalizeChatHistory(context.history);
+  const previousAssistantReply = extractLatestAssistantFromHistory(history) || undefined;
 
-  const userMessage = await supabaseDb.createMessage({
+  // Persist the user turn while generation starts so this required write does
+  // not add latency before the first streamed token.
+  const userMessagePromise = supabaseDb.createMessage({
     threadId: thread.id,
     userId: input.userId,
     role: "user",
@@ -165,16 +162,20 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
     userMessage: input.userMessage,
     history,
     fileContext: context.fileContext,
-    trickContext: context.trickContext,
+    retrievedKnowledge: context.retrievedKnowledge,
     avoidRepeatOf: followUp ? previousAssistantReply : undefined,
     continuationTarget: continuationTarget
       ? `Point ${requestedPoint}: ${continuationTarget}`
       : undefined,
   };
 
-  const generation = input.onModelToken
-    ? await generateWithGatewayStream(generationInput, input.onModelToken)
-    : await generateWithGateway(generationInput);
+  const generationPromise = input.onModelToken
+    ? generateWithGatewayStream(generationInput, input.onModelToken)
+    : generateWithGateway(generationInput);
+  const [generation, userMessage] = await Promise.all([
+    generationPromise,
+    userMessagePromise,
+  ]);
 
   const finalText = normalizeResponseText(generation.text);
 

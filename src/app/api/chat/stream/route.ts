@@ -69,8 +69,6 @@ export async function POST(req: Request) {
             attachmentIds: Array.isArray(body.attachmentIds) ? body.attachmentIds : [],
             clientHistory: normalizeChatHistory(body.clientHistory),
             userId: session.id,
-            userName: session.name,
-            userRole: session.role,
             onThreadReady: (threadId) => {
               threadIdFromCallback = threadId;
               if (threadEventSent) return;

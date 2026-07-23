@@ -20,21 +20,13 @@ import {
 import { createId, nowIso } from "@/lib/domain/utils";
 import { embedText } from "@/lib/ai/embedding";
 import { embedTrickText } from "@/lib/ai/trick-embedding";
+import { buildTrickKeywordPlan, rankKeywordTricks } from "@/lib/ai/trick-keyword-search";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { createServerClient } from "@supabase/ssr";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { fromDatabaseRow, fromDatabaseRows, toDatabaseRow } from "@/lib/data/case-mapper";
 
 // ── Helpers ──────────────────────────────────────────────
-
-/** Auto-convert camelCase keys to snake_case for DB insert/update */
-function toSnake<T extends Record<string, unknown>>(obj: T): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(obj)) {
-    // Leave values that are already objects (arrays, nested objects) as-is
-    result[key.replace(/([A-Z])/g, "_$1").toLowerCase()] = value;
-  }
-  return result;
-}
 
 const cookieStorage = new AsyncLocalStorage<string>();
 
@@ -43,7 +35,7 @@ export function withRequestCookie<T>(cookieHeader: string, fn: () => Promise<T>)
   return cookieStorage.run(cookieHeader, fn);
 }
 
-function sc() {
+async function sc() {
   const capturedCookie = cookieStorage.getStore();
   if (capturedCookie) {
     const cookieMap = new Map<string, string>();
@@ -66,48 +58,109 @@ function sc() {
   return getSupabaseServerClient();
 }
 
-function typed<T>(data: unknown): T {
-  return (data ?? []) as T;
+function assertNoError(error: { message?: string } | null, action: string) {
+  if (error) throw new Error(`${action}: ${error.message ?? "database error"}`);
+}
+
+function parseVector(value: unknown): number[] {
+  if (Array.isArray(value)) return value.map(Number).filter(Number.isFinite);
+  if (typeof value !== "string") return [];
+  return value
+    .replace(/^\[|\]$/g, "")
+    .split(",")
+    .map(Number)
+    .filter(Number.isFinite);
+}
+
+function mapVideo(data: unknown): VideoAsset | null {
+  const row = fromDatabaseRow<VideoAsset & { videoTags?: Array<{ tag?: unknown }> }>(data);
+  if (!row) return null;
+  return {
+    ...row,
+    tags: Array.isArray(row.videoTags)
+      ? row.videoTags.map((item) => String(item.tag ?? "")).filter(Boolean)
+      : [],
+  };
+}
+
+async function searchTricksByKeyword(queryText: string, matchCount: number) {
+  const plan = buildTrickKeywordPlan(queryText);
+  if (plan.terms.length === 0 && !plan.broadMagicRequest) return [];
+
+  const supabase = await sc();
+  const columns = "id,title,method_summary,difficulty,props_needed,tags";
+  const candidateLimit = Math.min(30, Math.max(matchCount * 3, 8));
+
+  const result = plan.terms.length > 0
+    ? await supabase
+        .from("tricks")
+        .select(columns)
+        .or(
+          plan.terms
+            .flatMap((term) => [
+              `title.ilike.%${term}%`,
+              `method_summary.ilike.%${term}%`,
+            ])
+            .join(",")
+        )
+        .limit(candidateLimit)
+    : await supabase
+        .from("tricks")
+        .select(columns)
+        .eq("difficulty", "beginner")
+        .order("created_at", { ascending: true })
+        .limit(candidateLimit);
+
+  if (result.error) {
+    throw new Error(`Failed to search trick keywords: ${result.error.message}`);
+  }
+
+  return rankKeywordTricks(
+    (result.data || []) as Record<string, unknown>[],
+    plan.terms,
+    matchCount
+  );
 }
 
 // ── Users / Profiles ─────────────────────────────────────
 
 export const supabaseDb = {
   async ensureUser(params: { id: string; name: string; role: UserRole; locale: Locale }): Promise<AppUser> {
-    const supabase = sc();
+    const supabase = await sc();
     const { data, error } = await supabase
       .from("profiles")
-      .upsert({ id: params.id, name: params.name, role: params.role, locale: params.locale })
-      .select()
-      .single();
+      .select("*")
+      .eq("id", params.id)
+      .maybeSingle();
 
-    if (error || !data) {
-      // Fallback: return what was requested
-      return { id: params.id, name: params.name, role: params.role, locale: params.locale, createdAt: nowIso() };
-    }
-    return data as AppUser;
+    assertNoError(error, "Failed to load user profile");
+    const profile = fromDatabaseRow<AppUser>(data);
+    if (!profile) throw new Error("User profile is missing");
+    return profile;
   },
 
   // ── Threads ────────────────────────────────────────────
 
   async listThreads(userId: string): Promise<Thread[]> {
-    const supabase = sc();
-    const { data } = await supabase
+    const supabase = await sc();
+    const { data, error } = await supabase
       .from("threads")
       .select("*")
       .eq("user_id", userId)
       .order("updated_at", { ascending: false });
-    return typed<Thread[]>(data);
+    assertNoError(error, "Failed to list threads");
+    return fromDatabaseRows<Thread>(data);
   },
 
   async getThread(threadId: string): Promise<Thread | null> {
-    const supabase = sc();
-    const { data } = await supabase.from("threads").select("*").eq("id", threadId).single();
-    return (data as Thread) ?? null;
+    const supabase = await sc();
+    const { data, error } = await supabase.from("threads").select("*").eq("id", threadId).maybeSingle();
+    assertNoError(error, "Failed to load thread");
+    return fromDatabaseRow<Thread>(data);
   },
 
   async createThread(userId: string, title: string): Promise<Thread> {
-    const supabase = sc();
+    const supabase = await sc();
     const now = nowIso();
     const thread: Thread = {
       id: createId("thread"),
@@ -116,24 +169,29 @@ export const supabaseDb = {
       createdAt: now,
       updatedAt: now,
     };
-    await supabase.from("threads").insert(toSnake(thread));
+    const { error } = await supabase.from("threads").insert(toDatabaseRow(thread));
+    assertNoError(error, "Failed to create thread");
     return thread;
   },
 
   async touchThread(threadId: string): Promise<void> {
-    const supabase = sc();
-    await supabase.from("threads").update({ updated_at: nowIso() }).eq("id", threadId);
+    const supabase = await sc();
+    const { error } = await supabase.from("threads").update({ updated_at: nowIso() }).eq("id", threadId);
+    assertNoError(error, "Failed to update thread");
   },
 
   async deleteThread(threadId: string, userId?: string): Promise<Thread | null> {
-    const supabase = sc();
+    const supabase = await sc();
     const thread = await supabaseDb.getThread(threadId);
     if (!thread) return null;
     if (userId && thread.userId !== userId) return null;
 
-    await supabase.from("messages").delete().eq("thread_id", threadId);
-    await supabase.from("thread_learning_state").delete().eq("thread_id", threadId);
-    await supabase.from("threads").delete().eq("id", threadId);
+    const { error: messageError } = await supabase.from("messages").delete().eq("thread_id", threadId);
+    assertNoError(messageError, "Failed to delete thread messages");
+    const { error: learningStateError } = await supabase.from("thread_learning_state").delete().eq("thread_id", threadId);
+    assertNoError(learningStateError, "Failed to delete thread learning state");
+    const { error: threadError } = await supabase.from("threads").delete().eq("id", threadId);
+    assertNoError(threadError, "Failed to delete thread");
 
     return thread;
   },
@@ -141,23 +199,25 @@ export const supabaseDb = {
   // ── Messages ───────────────────────────────────────────
 
   async listMessages(threadId: string): Promise<Message[]> {
-    const supabase = sc();
-    const { data } = await supabase
+    const supabase = await sc();
+    const { data, error } = await supabase
       .from("messages")
       .select("*")
       .eq("thread_id", threadId)
       .order("created_at", { ascending: true });
-    return typed<Message[]>(data);
+    assertNoError(error, "Failed to list messages");
+    return fromDatabaseRows<Message>(data);
   },
 
   async createMessage(payload: Omit<Message, "id" | "createdAt">): Promise<Message> {
-    const supabase = sc();
+    const supabase = await sc();
     const message: Message = {
       id: createId("msg"),
       createdAt: nowIso(),
       ...payload,
     };
-    await supabase.from("messages").insert(toSnake(message));
+    const { error } = await supabase.from("messages").insert(toDatabaseRow(message));
+    assertNoError(error, "Failed to create message");
     await supabaseDb.touchThread(payload.threadId);
     return message;
   },
@@ -165,33 +225,54 @@ export const supabaseDb = {
   // ── Videos ─────────────────────────────────────────────
 
   async listPublishedVideos(locale?: Locale): Promise<VideoAsset[]> {
-    const supabase = sc();
-    let query = supabase.from("video_assets").select("*").eq("status", "published");
-    const { data } = await query;
-    const videos = typed<VideoAsset[]>(data);
+    const supabase = await sc();
+    const { data, error } = await supabase
+      .from("video_assets")
+      .select("*, video_tags(tag)")
+      .eq("status", "published");
+    assertNoError(error, "Failed to list published videos");
+    const videos = Array.isArray(data)
+      ? data.map(mapVideo).filter((video): video is VideoAsset => video !== null)
+      : [];
     if (!locale) return videos;
     return videos.filter((v) => v.language === locale || v.language === "en");
   },
 
   async listVideosForAdmin(): Promise<VideoAsset[]> {
-    const supabase = sc();
-    const { data } = await supabase
+    const supabase = await sc();
+    const { data, error } = await supabase
       .from("video_assets")
-      .select("*")
+      .select("*, video_tags(tag)")
       .order("updated_at", { ascending: false });
-    return typed<VideoAsset[]>(data);
+    assertNoError(error, "Failed to list videos");
+    return Array.isArray(data)
+      ? data.map(mapVideo).filter((video): video is VideoAsset => video !== null)
+      : [];
   },
 
   async getVideo(videoId: string): Promise<VideoAsset | null> {
-    const supabase = sc();
-    const { data } = await supabase.from("video_assets").select("*").eq("id", videoId).single();
-    return (data as VideoAsset) ?? null;
+    const supabase = await sc();
+    const { data, error } = await supabase
+      .from("video_assets")
+      .select("*, video_tags(tag)")
+      .eq("id", videoId)
+      .maybeSingle();
+    assertNoError(error, "Failed to load video");
+    return mapVideo(data);
   },
 
   async getVideoEmbedding(videoId: string): Promise<VideoEmbedding | null> {
-    const supabase = sc();
-    const { data } = await supabase.from("video_embeddings").select("*").eq("video_id", videoId).single();
-    return (data as VideoEmbedding) ?? null;
+    const supabase = await sc();
+    const { data, error } = await supabase
+      .from("video_embeddings")
+      .select("*")
+      .eq("video_id", videoId)
+      .maybeSingle();
+    assertNoError(error, "Failed to load video embedding");
+    const row = fromDatabaseRow<Omit<VideoEmbedding, "vector"> & { embedding?: unknown }>(data);
+    if (!row) return null;
+    const { embedding, ...fields } = row;
+    return { ...fields, vector: parseVector(embedding) } as VideoEmbedding;
   },
 
   async createVideo(payload: {
@@ -203,7 +284,7 @@ export const supabaseDb = {
     difficulty: VideoDifficulty;
     tags: string[];
   }): Promise<VideoAsset> {
-    const supabase = sc();
+    const supabase = await sc();
     const now = nowIso();
     const video: VideoAsset = {
       id: createId("video"),
@@ -219,7 +300,10 @@ export const supabaseDb = {
       updatedAt: now,
     };
 
-    await supabase.from("video_assets").insert(toSnake(video));
+    const videoRow = toDatabaseRow(video);
+    delete videoRow.tags;
+    const { error: videoError } = await supabase.from("video_assets").insert(videoRow);
+    assertNoError(videoError, "Failed to create video");
 
     if (payload.tags.length > 0) {
       const tags: VideoTag[] = payload.tags.map((tag) => ({
@@ -228,50 +312,64 @@ export const supabaseDb = {
         tag,
         createdAt: now,
       }));
-      await supabase.from("video_tags").insert(tags.map((t: VideoTag) => toSnake(t as unknown as Record<string, unknown>)));
+      const { error: tagError } = await supabase
+        .from("video_tags")
+        .insert(tags.map((tag) => toDatabaseRow(tag)));
+      if (tagError) await supabase.from("video_assets").delete().eq("id", video.id);
+      assertNoError(tagError, "Failed to create video tags");
     }
 
-    await supabase.from("video_embeddings").insert({
+    const { error: embeddingError } = await supabase.from("video_embeddings").insert({
       id: createId("emb"),
       video_id: video.id,
       model: "local-hash-64",
       embedding: embedText(`${video.title} ${video.description} ${payload.tags.join(" ")}`),
       created_at: now,
     });
+    if (embeddingError) {
+      await supabase.from("video_tags").delete().eq("video_id", video.id);
+      await supabase.from("video_assets").delete().eq("id", video.id);
+    }
+    assertNoError(embeddingError, "Failed to create video embedding");
 
     return video;
   },
 
   async updateVideo(videoId: string, patch: Partial<Omit<VideoAsset, "id" | "createdBy" | "createdAt">>): Promise<VideoAsset | null> {
-    const supabase = sc();
+    const supabase = await sc();
     const video = await supabaseDb.getVideo(videoId);
     if (!video) return null;
 
-    const updates: Record<string, unknown> = { updated_at: nowIso() };
+    const updates: Record<string, unknown> = { updatedAt: nowIso() };
     if (typeof patch.title === "string") updates.title = patch.title;
     if (typeof patch.description === "string") updates.description = patch.description;
     if (typeof patch.url === "string") updates.url = patch.url;
     if (patch.language === "zh" || patch.language === "en") updates.language = patch.language;
     if (patch.difficulty) updates.difficulty = patch.difficulty;
-    if (patch.tags) updates.tags = patch.tags;
     if (patch.status) updates.status = patch.status;
 
-    await supabase.from("video_assets").update(toSnake(updates)).eq("id", videoId);
+    const { error: updateError } = await supabase
+      .from("video_assets")
+      .update(toDatabaseRow(updates))
+      .eq("id", videoId);
+    assertNoError(updateError, "Failed to update video");
 
     // Update embedding
     const emb = await supabaseDb.getVideoEmbedding(videoId);
     if (emb) {
       const t = typeof updates.title === "string" ? updates.title : video.title;
       const d = typeof updates.description === "string" ? updates.description : video.description;
-      const tags = Array.isArray(updates.tags) ? updates.tags : video.tags;
-      await supabase.from("video_embeddings").update({
-        embedding: embedText(`${t} ${d} ${tags.join(" ")}`),
+      const nextTags = Array.isArray(patch.tags) ? patch.tags : video.tags;
+      const { error: embeddingError } = await supabase.from("video_embeddings").update({
+        embedding: embedText(`${t} ${d} ${nextTags.join(" ")}`),
       }).eq("id", emb.id);
+      assertNoError(embeddingError, "Failed to update video embedding");
     }
 
     // Sync tags if changed
     if (Array.isArray(patch.tags)) {
-      await supabase.from("video_tags").delete().eq("video_id", videoId);
+      const { error: deleteTagError } = await supabase.from("video_tags").delete().eq("video_id", videoId);
+      assertNoError(deleteTagError, "Failed to replace video tags");
       const tags: VideoTag[] = patch.tags.map((tag) => ({
         id: createId("vtag"),
         videoId,
@@ -279,7 +377,10 @@ export const supabaseDb = {
         createdAt: nowIso(),
       }));
       if (tags.length > 0) {
-        await supabase.from("video_tags").insert(tags.map((t: VideoTag) => toSnake(t as unknown as Record<string, unknown>)));
+        const { error: tagError } = await supabase
+          .from("video_tags")
+          .insert(tags.map((tag) => toDatabaseRow(tag)));
+        assertNoError(tagError, "Failed to update video tags");
       }
     }
 
@@ -287,13 +388,14 @@ export const supabaseDb = {
   },
 
   async publishVideo(videoId: string): Promise<VideoAsset | null> {
-    const supabase = sc();
+    const supabase = await sc();
     const now = nowIso();
-    await supabase.from("video_assets").update({
+    const { error } = await supabase.from("video_assets").update({
       status: "published",
       published_at: now,
       updated_at: now,
     }).eq("id", videoId);
+    assertNoError(error, "Failed to publish video");
 
     return supabaseDb.getVideo(videoId);
   },
@@ -307,7 +409,7 @@ export const supabaseDb = {
     size: number;
     storageKey: string;
   }): Promise<FileAsset> {
-    const supabase = sc();
+    const supabase = await sc();
     const now = new Date();
     const file: FileAsset = {
       id: createId("file"),
@@ -321,55 +423,71 @@ export const supabaseDb = {
       updatedAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString(),
     };
-    await supabase.from("file_assets").insert(toSnake(file));
+    const { error } = await supabase.from("file_assets").insert(toDatabaseRow(file));
+    assertNoError(error, "Failed to create file");
     return file;
   },
 
   async listFiles(userId: string): Promise<FileAsset[]> {
-    const supabase = sc();
+    const supabase = await sc();
     const now = Date.now();
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("file_assets")
       .select("*")
       .eq("user_id", userId)
       .order("updated_at", { ascending: false });
 
-    const files = typed<FileAsset[]>(data);
+    assertNoError(error, "Failed to list files");
+    const files = fromDatabaseRows<FileAsset>(data);
     // Mark expired files
     for (const file of files) {
       if (new Date(file.expiresAt).getTime() < now && file.status !== "expired") {
         file.status = "expired";
-        await supabase.from("file_assets").update({ status: "expired", updated_at: nowIso() }).eq("id", file.id);
+        const { error: expiryError } = await supabase
+          .from("file_assets")
+          .update({ status: "expired", updated_at: nowIso() })
+          .eq("id", file.id);
+        assertNoError(expiryError, "Failed to expire file");
       }
     }
     return files;
   },
 
   async getFile(fileId: string): Promise<FileAsset | null> {
-    const supabase = sc();
-    const { data } = await supabase.from("file_assets").select("*").eq("id", fileId).single();
-    const file = (data as FileAsset) ?? null;
+    const supabase = await sc();
+    const { data, error } = await supabase.from("file_assets").select("*").eq("id", fileId).maybeSingle();
+    assertNoError(error, "Failed to load file");
+    const file = fromDatabaseRow<FileAsset>(data);
     if (file && new Date(file.expiresAt).getTime() < Date.now() && file.status !== "expired") {
       file.status = "expired";
-      await supabase.from("file_assets").update({ status: "expired", updated_at: nowIso() }).eq("id", file.id);
+      const { error: expiryError } = await supabase
+        .from("file_assets")
+        .update({ status: "expired", updated_at: nowIso() })
+        .eq("id", file.id);
+      assertNoError(expiryError, "Failed to expire file");
     }
     return file;
   },
 
   async saveUpload(fileId: string, buffer: ArrayBuffer): Promise<void> {
-    const supabase = sc();
-    await supabase.storage.from("file-uploads").upload(`uploads/${fileId}`, buffer, { upsert: true });
+    const supabase = await sc();
+    const file = await supabaseDb.getFile(fileId);
+    if (!file) throw new Error("File metadata not found");
+    const { error } = await supabase.storage.from("file-uploads").upload(file.storageKey, buffer, { upsert: true });
+    assertNoError(error, "Failed to upload file");
   },
 
   async getUpload(fileId: string): Promise<ArrayBuffer | null> {
-    const supabase = sc();
-    const { data, error } = await supabase.storage.from("file-uploads").download(`uploads/${fileId}`);
+    const supabase = await sc();
+    const file = await supabaseDb.getFile(fileId);
+    if (!file) return null;
+    const { data, error } = await supabase.storage.from("file-uploads").download(file.storageKey);
     if (error || !data) return null;
     return data.arrayBuffer();
   },
 
   async createFileJob(fileId: string, userId: string): Promise<FileJob> {
-    const supabase = sc();
+    const supabase = await sc();
     const now = nowIso();
     const job: FileJob = {
       id: createId("job"),
@@ -379,57 +497,74 @@ export const supabaseDb = {
       createdAt: now,
       updatedAt: now,
     };
-    await supabase.from("file_jobs").insert(toSnake(job));
+    const { error } = await supabase.from("file_jobs").insert(toDatabaseRow(job));
+    assertNoError(error, "Failed to create file job");
     return job;
   },
 
   async updateFileJob(jobId: string, status: FileJobStatus, patch?: Partial<FileJob>): Promise<FileJob | null> {
-    const supabase = sc();
-    await supabase.from("file_jobs").update({ ...patch, status, updated_at: nowIso() }).eq("id", jobId);
-    const { data } = await supabase.from("file_jobs").select("*").eq("id", jobId).single();
-    return (data as FileJob) ?? null;
+    const supabase = await sc();
+    const { error: updateError } = await supabase
+      .from("file_jobs")
+      .update(toDatabaseRow({ ...patch, status, updatedAt: nowIso() }))
+      .eq("id", jobId);
+    assertNoError(updateError, "Failed to update file job");
+    const { data, error } = await supabase.from("file_jobs").select("*").eq("id", jobId).maybeSingle();
+    assertNoError(error, "Failed to load updated file job");
+    return fromDatabaseRow<FileJob>(data);
   },
 
   async getFileJob(jobId: string): Promise<FileJob | null> {
-    const supabase = sc();
-    const { data } = await supabase.from("file_jobs").select("*").eq("id", jobId).single();
-    return (data as FileJob) ?? null;
+    const supabase = await sc();
+    const { data, error } = await supabase.from("file_jobs").select("*").eq("id", jobId).maybeSingle();
+    assertNoError(error, "Failed to load file job");
+    return fromDatabaseRow<FileJob>(data);
   },
 
   async listAllFileJobs(): Promise<FileJob[]> {
-    const supabase = sc();
-    const { data } = await supabase.from("file_jobs").select("*").order("created_at", { ascending: false });
-    return typed<FileJob[]>(data);
+    const supabase = await sc();
+    const { data, error } = await supabase.from("file_jobs").select("*").order("created_at", { ascending: false });
+    assertNoError(error, "Failed to list file jobs");
+    return fromDatabaseRows<FileJob>(data);
   },
 
   async listFileJobs(fileId: string): Promise<FileJob[]> {
-    const supabase = sc();
-    const { data } = await supabase
+    const supabase = await sc();
+    const { data, error } = await supabase
       .from("file_jobs")
       .select("*")
       .eq("file_id", fileId)
       .order("created_at", { ascending: false });
-    return typed<FileJob[]>(data);
+    assertNoError(error, "Failed to list file jobs");
+    return fromDatabaseRows<FileJob>(data);
   },
 
   async updateFile(fileId: string, patch: Partial<FileAsset>): Promise<FileAsset | null> {
-    const supabase = sc();
-    await supabase.from("file_assets").update({ ...patch, updated_at: nowIso() }).eq("id", fileId);
+    const supabase = await sc();
+    const { error } = await supabase
+      .from("file_assets")
+      .update(toDatabaseRow({ ...patch, updatedAt: nowIso() }))
+      .eq("id", fileId);
+    assertNoError(error, "Failed to update file");
     return supabaseDb.getFile(fileId);
   },
 
   async deleteFile(fileId: string, userId?: string): Promise<FileAsset | null> {
-    const supabase = sc();
+    const supabase = await sc();
     const file = await supabaseDb.getFile(fileId);
     if (!file) return null;
     if (userId && file.userId !== userId) return null;
 
-    await supabase.from("file_jobs").delete().eq("file_id", fileId);
-    await supabase.from("file_insights").delete().eq("file_id", fileId);
-    await supabase.from("file_assets").delete().eq("id", fileId);
+    const { error: jobsError } = await supabase.from("file_jobs").delete().eq("file_id", fileId);
+    assertNoError(jobsError, "Failed to delete file jobs");
+    const { error: insightsError } = await supabase.from("file_insights").delete().eq("file_id", fileId);
+    assertNoError(insightsError, "Failed to delete file insights");
+    const { error: fileError } = await supabase.from("file_assets").delete().eq("id", fileId);
+    assertNoError(fileError, "Failed to delete file");
 
     // Clean up storage
-    await supabase.storage.from("file-uploads").remove([`uploads/${fileId}`]);
+    const { error: storageError } = await supabase.storage.from("file-uploads").remove([file.storageKey]);
+    assertNoError(storageError, "Failed to delete stored file");
 
     return file;
   },
@@ -437,97 +572,105 @@ export const supabaseDb = {
   // ── File Insights ──────────────────────────────────────
 
   async createFileInsight(payload: Omit<FileInsight, "id" | "createdAt">): Promise<FileInsight> {
-    const supabase = sc();
+    const supabase = await sc();
     const insight: FileInsight = {
       id: createId("insight"),
       createdAt: nowIso(),
       ...payload,
     };
-    await supabase.from("file_insights").insert(toSnake(insight));
+    const { error } = await supabase.from("file_insights").insert(toDatabaseRow(insight));
+    assertNoError(error, "Failed to create file insight");
     return insight;
   },
 
   async listFileInsightsByIds(userId: string, ids: string[]): Promise<FileInsight[]> {
     if (ids.length === 0) return [];
-    const supabase = sc();
-    const { data } = await supabase
+    const supabase = await sc();
+    const { data, error } = await supabase
       .from("file_insights")
       .select("*")
       .eq("user_id", userId)
       .in("file_id", ids);
-    return typed<FileInsight[]>(data);
+    assertNoError(error, "Failed to list file insights");
+    return fromDatabaseRows<FileInsight>(data);
   },
 
   async listRecentFileInsights(userId: string, locale: Locale, limit = 3): Promise<FileInsight[]> {
-    const supabase = sc();
-    const { data } = await supabase
+    const supabase = await sc();
+    const { data, error } = await supabase
       .from("file_insights")
       .select("*")
       .eq("user_id", userId)
       .eq("locale", locale)
       .order("created_at", { ascending: false })
       .limit(limit);
-    return typed<FileInsight[]>(data);
+    assertNoError(error, "Failed to list recent file insights");
+    return fromDatabaseRows<FileInsight>(data);
   },
 
   // ── Audit Logs ─────────────────────────────────────────
 
   async createAuditLog(payload: Omit<AuditLog, "id" | "createdAt">): Promise<AuditLog> {
-    const supabase = sc();
+    const supabase = await sc();
     const log: AuditLog = {
       id: createId("audit"),
       createdAt: nowIso(),
       ...payload,
     };
-    await supabase.from("audit_logs").insert(toSnake(log));
+    const { error } = await supabase.from("audit_logs").insert(toDatabaseRow(log));
+    assertNoError(error, "Failed to create audit log");
     return log;
   },
 
   async listAuditLogs(limit = 120): Promise<AuditLog[]> {
-    const supabase = sc();
-    const { data } = await supabase
+    const supabase = await sc();
+    const { data, error } = await supabase
       .from("audit_logs")
       .select("*")
       .order("created_at", { ascending: false })
       .limit(limit);
-    return typed<AuditLog[]>(data);
+    assertNoError(error, "Failed to list audit logs");
+    return fromDatabaseRows<AuditLog>(data);
   },
 
   // ── Events ─────────────────────────────────────────────
 
   async createEvent(payload: Omit<Event, "id" | "createdAt">): Promise<Event> {
-    const supabase = sc();
+    const supabase = await sc();
     const event: Event = {
       id: createId("event"),
       createdAt: nowIso(),
       ...payload,
     };
-    await supabase.from("events").insert(toSnake(event));
+    const { error } = await supabase.from("events").insert(toDatabaseRow(event));
+    assertNoError(error, "Failed to create event");
     return event;
   },
 
   async listEvents(limit = 200): Promise<Event[]> {
-    const supabase = sc();
-    const { data } = await supabase
+    const supabase = await sc();
+    const { data, error } = await supabase
       .from("events")
       .select("*")
       .order("created_at", { ascending: false })
       .limit(limit);
-    return typed<Event[]>(data);
+    assertNoError(error, "Failed to list events");
+    return fromDatabaseRows<Event>(data);
   },
 
   // ── Recommendations (event-based) ──────────────────────
 
   async listRecentlyRecommendedVideoIdsByThread(threadId: string, userId: string, limit = 9): Promise<string[]> {
-    const supabase = sc();
-    const { data } = await supabase
+    const supabase = await sc();
+    const { data, error } = await supabase
       .from("events")
       .select("*")
       .eq("user_id", userId)
       .eq("name", "chat_completion")
       .order("created_at", { ascending: false });
 
-    const events = typed<Event[]>(data);
+    assertNoError(error, "Failed to list recommendation events");
+    const events = fromDatabaseRows<Event>(data);
     const ids: string[] = [];
     for (const event of events) {
       const payload = event.payload as Record<string, unknown>;
@@ -544,15 +687,16 @@ export const supabaseDb = {
   },
 
   async getLatestThreadRecommendations(threadId: string, userId: string): Promise<VideoRecommendation[]> {
-    const supabase = sc();
-    const { data } = await supabase
+    const supabase = await sc();
+    const { data, error } = await supabase
       .from("events")
       .select("*")
       .eq("user_id", userId)
       .eq("name", "chat_completion")
       .order("created_at", { ascending: false });
 
-    const events = typed<Event[]>(data);
+    assertNoError(error, "Failed to load recommendation events");
+    const events = fromDatabaseRows<Event>(data);
     for (const event of events) {
       const payload = event.payload as Record<string, unknown>;
       if (payload.threadId !== threadId) continue;
@@ -594,17 +738,18 @@ export const supabaseDb = {
   // ── Thread Learning State ──────────────────────────────
 
   async getThreadLearningState(threadId: string): Promise<ThreadLearningState | null> {
-    const supabase = sc();
-    const { data } = await supabase
+    const supabase = await sc();
+    const { data, error } = await supabase
       .from("thread_learning_state")
       .select("*")
       .eq("thread_id", threadId)
-      .single();
-    return (data as ThreadLearningState) ?? null;
+      .maybeSingle();
+    assertNoError(error, "Failed to load thread learning state");
+    return fromDatabaseRow<ThreadLearningState>(data);
   },
 
   async upsertThreadLearningState(payload: Omit<ThreadLearningState, "updatedAt">): Promise<ThreadLearningState> {
-    const supabase = sc();
+    const supabase = await sc();
     const existing = await supabaseDb.getThreadLearningState(payload.threadId);
     const next: ThreadLearningState = {
       threadId: payload.threadId,
@@ -616,9 +761,14 @@ export const supabaseDb = {
     };
 
     if (existing) {
-      await supabase.from("thread_learning_state").update(toSnake(next)).eq("thread_id", payload.threadId);
+      const { error } = await supabase
+        .from("thread_learning_state")
+        .update(toDatabaseRow(next))
+        .eq("thread_id", payload.threadId);
+      assertNoError(error, "Failed to update thread learning state");
     } else {
-      await supabase.from("thread_learning_state").insert(toSnake(next));
+      const { error } = await supabase.from("thread_learning_state").insert(toDatabaseRow(next));
+      assertNoError(error, "Failed to create thread learning state");
     }
     return next;
   },
@@ -634,7 +784,7 @@ export const supabaseDb = {
     tags: string[];
     source: string;
   }) {
-    const supabase = sc();
+    const supabase = await sc();
     const { data: trick, error } = await supabase
       .from("tricks")
       .insert({
@@ -658,36 +808,52 @@ export const supabaseDb = {
     const chunkText = `${payload.effectDescription}\n\n${payload.methodSummary}`;
     const embedding = await embedTrickText(chunkText, "document");
 
-    await supabase.from("trick_chunks").insert({
+    const { error: chunkError } = await supabase.from("trick_chunks").insert({
       trick_id: trick.id,
       content: chunkText,
       embedding,
     });
+    assertNoError(chunkError, "Failed to create trick embedding");
 
-    return trick;
+    return fromDatabaseRow<Record<string, unknown>>(trick) ?? trick;
   },
 
   async listTricks() {
-    const supabase = sc();
-    const { data } = await supabase
+    const supabase = await sc();
+    const { data, error } = await supabase
       .from("tricks")
       .select("*")
       .order("created_at", { ascending: false });
-    return typed<Record<string, unknown>[]>(data);
+    assertNoError(error, "Failed to list tricks");
+    return fromDatabaseRows<Record<string, unknown>>(data);
   },
 
   async searchTrickChunks(queryText: string, matchCount = 5) {
-    const supabase = sc();
-    const embedding = await embedTrickText(queryText, "query");
-    const { data, error } = await supabase.rpc("hybrid_search_trick_chunks", {
-      query_text: queryText,
-      query_embedding: embedding,
-      match_count: matchCount,
-    });
+    if (process.env.VOYAGE_API_KEY) {
+      try {
+        const supabase = await sc();
+        const embedding = await embedTrickText(queryText, "query");
+        const { data, error } = await supabase.rpc("hybrid_search_trick_chunks", {
+          query_text: queryText,
+          query_embedding: embedding,
+          match_count: matchCount,
+        });
 
-    if (error) {
-      throw new Error(`Failed to search trick chunks: ${error.message}`);
+        if (error) {
+          throw new Error(`Failed to search trick chunks: ${error.message}`);
+        }
+        const semanticRows = fromDatabaseRows<Record<string, unknown>>(data).map((row) => ({
+          ...row,
+          searchMode: "semantic",
+        }));
+        if (semanticRows.length > 0) return semanticRows;
+      } catch (error) {
+        console.warn("Semantic knowledge retrieval failed; trying keyword fallback", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
-    return typed<Record<string, unknown>[]>(data);
+
+    return searchTricksByKeyword(queryText, matchCount);
   },
 };

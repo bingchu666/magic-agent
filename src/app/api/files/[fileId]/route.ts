@@ -2,10 +2,11 @@ import { assertSession } from "@/features/auth/session.server";
 import { supabaseDb } from "@/lib/data/supabase-db";
 import { jsonError, jsonOk } from "@/lib/ui/api";
 
-export async function GET(req: Request, { params }: { params: { fileId: string } }) {
+export async function GET(req: Request, { params }: { params: Promise<{ fileId: string }> }) {
   try {
+    const { fileId } = await params;
     const session = await assertSession(req);
-    const file = await supabaseDb.getFile(params.fileId);
+    const file = await supabaseDb.getFile(fileId);
     if (!file || file.userId !== session.id) {
       return jsonError("FILE_NOT_FOUND", 404);
     }
@@ -23,10 +24,11 @@ export async function GET(req: Request, { params }: { params: { fileId: string }
   }
 }
 
-export async function DELETE(req: Request, { params }: { params: { fileId: string } }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ fileId: string }> }) {
   try {
+    const { fileId } = await params;
     const session = await assertSession(req);
-    const deleted = await supabaseDb.deleteFile(params.fileId, session.id);
+    const deleted = await supabaseDb.deleteFile(fileId, session.id);
     if (!deleted) {
       return jsonError("FILE_NOT_FOUND", 404);
     }
