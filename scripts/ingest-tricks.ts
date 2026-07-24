@@ -274,21 +274,36 @@ async function main() {
     console.log("=== DRY RUN MODE — nothing will be written to the database ===\n");
   }
 
-  if (!fs.existsSync(CONTENT_DIR)) {
-    console.error(`No content folder found at ${CONTENT_DIR} — create one and put your .md trick files there.`);
+  const requestedFiles = process.argv
+    .slice(2)
+    .filter((arg) => !arg.startsWith("--"))
+    .map((file) => path.resolve(file));
+  const files = requestedFiles.length > 0
+    ? requestedFiles
+    : fs.existsSync(CONTENT_DIR)
+      ? fs.readdirSync(CONTENT_DIR)
+          .filter((file) => file.endsWith(".md"))
+          .map((file) => path.join(CONTENT_DIR, file))
+      : [];
+
+  if (files.length === 0) {
+    console.log("No .md files found to ingest.");
     return;
   }
 
-  const files = fs.readdirSync(CONTENT_DIR).filter((f) => f.endsWith(".md"));
-  if (files.length === 0) {
-    console.log("No .md files found in ./content — nothing to ingest.");
-    return;
+  for (const file of files) {
+    if (!fs.existsSync(file)) {
+      throw new Error(`Input file not found: ${file}`);
+    }
+    if (path.extname(file).toLowerCase() !== ".md") {
+      throw new Error(`Input file must be Markdown: ${file}`);
+    }
   }
 
   console.log(`Found ${files.length} file(s) to process:`);
   for (const file of files) {
-    console.log(`\n${file}:`);
-    await ingestFile(path.join(CONTENT_DIR, file));
+    console.log(`\n${path.basename(file)}:`);
+    await ingestFile(file);
   }
   console.log(`\nDone.${DRY_RUN ? " (dry run — nothing was written)" : ""}`);
 }

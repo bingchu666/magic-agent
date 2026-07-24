@@ -62,6 +62,8 @@ export async function POST(req: Request) {
         let threadEventSent = false;
         let streamedAnyToken = false;
         let threadIdFromCallback: string | null = null;
+        const chatStartedAt = Date.now();
+        let firstTokenLogged = false;
 
         try {
           const result = await runAgentOrchestration({
@@ -82,6 +84,12 @@ export async function POST(req: Request) {
             },
             onModelToken: (text) => {
               if (!text) return;
+              if (!firstTokenLogged) {
+                firstTokenLogged = true;
+                console.info("Chat stream first token", {
+                  durationMs: Date.now() - chatStartedAt,
+                });
+              }
               streamedAnyToken = true;
               write("token", { text });
             },
@@ -112,6 +120,10 @@ export async function POST(req: Request) {
             recommendationRefreshed: result.output.recommendationRefreshed,
             refreshReason: result.output.refreshReason,
             goalTopic: result.output.goalTopic,
+          });
+          console.info("Chat stream completed", {
+            provider: result.output.provider,
+            durationMs: Date.now() - chatStartedAt,
           });
         } catch (error) {
           streamFailed = true;

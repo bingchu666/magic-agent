@@ -1,6 +1,6 @@
 const DEFAULT_MIN_SIMILARITY = 0.35;
 const DEFAULT_MAX_CONTEXT_CHARS = 4000;
-const DEFAULT_TIMEOUT_MS = 5000;
+const DEFAULT_TIMEOUT_MS = 3000;
 
 export type KnowledgeSearch = (
   query: string
@@ -45,6 +45,7 @@ export async function retrieveOptionalKnowledge(params: {
 }): Promise<string> {
   const query = params.query.trim();
   if (!query) return "";
+  const startedAt = Date.now();
 
   try {
     const configuredTimeout = Number(process.env.RAG_TIMEOUT_MS);
@@ -74,9 +75,13 @@ export async function retrieveOptionalKnowledge(params: {
       console.info("Optional knowledge retrieval hit", {
         mode,
         matches: chunks.length,
+        durationMs: Date.now() - startedAt,
       });
     } else {
-      console.info("Optional knowledge retrieval miss", { mode });
+      console.info("Optional knowledge retrieval miss", {
+        mode,
+        durationMs: Date.now() - startedAt,
+      });
     }
     return chunks
       .join("\n\n---\n\n")
@@ -84,6 +89,7 @@ export async function retrieveOptionalKnowledge(params: {
   } catch (error) {
     console.warn("Optional knowledge retrieval unavailable; continuing without it", {
       error: error instanceof Error ? error.message : String(error),
+      durationMs: Date.now() - startedAt,
     });
     return "";
   }
