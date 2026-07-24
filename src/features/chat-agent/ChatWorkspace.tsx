@@ -298,6 +298,26 @@ export function ChatWorkspace() {
       // The latest user message is sent separately as userMessage. History only
       // contains completed prior turns so the model never receives it twice.
       const historyForRequest = buildClientHistory(messages);
+      let pendingTokenText = "";
+      let tokenFlushTimer: number | null = null;
+      const flushPendingTokens = () => {
+        tokenFlushTimer = null;
+        const text = pendingTokenText;
+        pendingTokenText = "";
+        if (!text) return;
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantMessageId
+              ? { ...message, content: `${message.content}${text}` }
+              : message
+          )
+        );
+      };
+      const queueToken = (text: string) => {
+        pendingTokenText += text;
+        if (tokenFlushTimer !== null) return;
+        tokenFlushTimer = window.setTimeout(flushPendingTokens, 32);
+      };
       const res = await fetch("/api/chat/stream", {
         method: "POST",
         headers: {
@@ -334,15 +354,11 @@ export function ChatWorkspace() {
           }
         },
         token: (payload) => {
-          setMessages((prev) =>
-            prev.map((message) =>
-              message.id === assistantMessageId
-                ? { ...message, content: `${message.content}${payload.text}` }
-                : message
-            )
-          );
+          queueToken(payload.text);
         },
         cards: (payload) => {
+          if (tokenFlushTimer !== null) window.clearTimeout(tokenFlushTimer);
+          flushPendingTokens();
           setMessages((prev) =>
             prev.map((message) =>
               message.id === assistantMessageId
@@ -356,11 +372,18 @@ export function ChatWorkspace() {
           );
         },
         video_recommendations: () => {},
-        done: () => {},
+        done: () => {
+          if (tokenFlushTimer !== null) window.clearTimeout(tokenFlushTimer);
+          flushPendingTokens();
+        },
         error: (payload) => {
+          if (tokenFlushTimer !== null) window.clearTimeout(tokenFlushTimer);
+          flushPendingTokens();
           setError(payload.message);
         },
       });
+      if (tokenFlushTimer !== null) window.clearTimeout(tokenFlushTimer);
+      flushPendingTokens();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";
       const fallbackText = locale === "zh" ? "请求失败，请稍后重试。" : "Request failed. Please retry.";

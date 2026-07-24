@@ -26,7 +26,10 @@ const HISTORY_CLIP_CHARS = Number(process.env.MODEL_HISTORY_CHARS || 8000);
 const HISTORY_MAX_TURNS = Number(process.env.MODEL_HISTORY_TURNS || 16);
 const HISTORY_TURN_MAX_CHARS = Number(process.env.MODEL_HISTORY_TURN_CHARS || 1600);
 const ENABLE_OPENAI_FALLBACK = process.env.OPENAI_FALLBACK_ENABLED === "true";
-const GROUNDED_STREAM_GUARD_CHARS = 320;
+const configuredGroundedGuardChars = Number(process.env.GROUNDED_STREAM_GUARD_CHARS);
+const GROUNDED_STREAM_GUARD_CHARS = Number.isFinite(configuredGroundedGuardChars)
+  ? Math.max(32, configuredGroundedGuardChars)
+  : 96;
 const DEFAULT_MAGIC_SYSTEM_PROMPT =
   "You are MagicAgent, a professional magic-learning and performance coach. Answer the user's latest request directly with practical, complete guidance. Be concise by default and expand when the user asks for more detail. Keep continuity across turns, and only continue a prior section when the user explicitly asks to continue. Treat the supplied conversation history as authoritative context: remember facts, preferences, names, constraints, and earlier decisions within this thread, and resolve follow-up references from that history. For any broad but answerable request, make a sensible assumption and provide useful substance before offering follow-up choices. Ask a clarifying question first only when missing information would materially change the correctness or safety of the answer. When teaching a trick, ensure the stated effect, required props, setup, secret, and performance steps are mutually consistent, and prefer established, reliable techniques over improvised or uncertain procedures. When the user names a specific published trick or source and no relevant source material is supplied, never invent or confidently attribute an exact method to that work; clearly separate uncertain general guidance from verified source details.";
 const RETRIEVAL_POLICY_PROMPT =
@@ -300,12 +303,13 @@ async function callProviderStream(params: {
         let bufferedText = "";
         let emittedToken = false;
         let suppressDraft = false;
+        let groundedGuardPassed = !guardGroundedAnswer;
         for await (const chunk of stream) {
           const delta = extractDeltaText(chunk);
           if (!delta) continue;
           text += delta;
 
-          if (!guardGroundedAnswer) {
+          if (groundedGuardPassed) {
             if (params.onToken) params.onToken(delta);
             emittedToken = true;
             continue;
@@ -316,12 +320,15 @@ async function callProviderStream(params: {
           if (isGroundedMethodRefusal(params.input, bufferedText)) {
             suppressDraft = true;
             bufferedText = "";
-            continue;
+            // Stop consuming the rejected draft immediately. Waiting for the
+            // provider to finish it before retrying can double response time.
+            break;
           }
           if (bufferedText.length >= GROUNDED_STREAM_GUARD_CHARS) {
             if (params.onToken) params.onToken(bufferedText);
             emittedToken = true;
             bufferedText = "";
+            groundedGuardPassed = true;
           }
         }
 
