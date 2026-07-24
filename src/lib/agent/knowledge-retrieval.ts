@@ -1,6 +1,6 @@
 const DEFAULT_MIN_SIMILARITY = 0.35;
 const DEFAULT_MAX_CONTEXT_CHARS = 4000;
-const DEFAULT_TIMEOUT_MS = 2500;
+const DEFAULT_TIMEOUT_MS = 5000;
 
 export type KnowledgeSearch = (
   query: string

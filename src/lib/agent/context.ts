@@ -46,6 +46,7 @@ export async function buildContext(params: {
     attachmentIds = [],
     clientHistory = [],
   } = params;
+  console.time("buildContext");
   const [storedMessages, explicitInsights, retrievedKnowledge] =
     await Promise.all([
       clientHistory.length > 0
@@ -85,6 +86,7 @@ export async function buildContext(params: {
     .join("\n")
     .slice(-3000);
 
+  console.timeEnd("buildContext");
   return {
     history,
     fileContext,

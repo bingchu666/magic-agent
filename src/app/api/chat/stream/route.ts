@@ -36,7 +36,9 @@ function chunkText(text: string) {
 
 export async function POST(req: Request) {
   try {
+    console.time("chat/stream:assertSession");
     const session = await assertSession(req);
+    console.timeEnd("chat/stream:assertSession");
     const body = (await req.json()) as ChatStreamRequest;
 
     if (!body?.userMessage || typeof body.userMessage !== "string") {

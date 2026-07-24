@@ -212,6 +212,7 @@ async function callProvider(params: {
   const maxTokens = resolveMaxTokens(params.input);
   let retryGroundedRefusal = false;
 
+  console.time("callProvider");
   for (const model of params.models) {
     for (let attempt = 1; attempt <= attemptsPerModel; attempt += 1) {
       try {
@@ -235,6 +236,7 @@ async function callProvider(params: {
           });
           continue;
         }
+        console.timeEnd("callProvider");
         return {
           text: content,
           provider: params.provider,
@@ -244,6 +246,7 @@ async function callProvider(params: {
       }
     }
   }
+  console.timeEnd("callProvider");
   return null;
 }
 
@@ -282,6 +285,7 @@ async function callProviderStream(params: {
   const guardGroundedAnswer = shouldGuardGroundedAnswer(params.input);
   let retryGroundedRefusal = false;
 
+  console.time("callProviderStream");
   for (const model of params.models) {
     for (let attempt = 1; attempt <= attemptsPerModel; attempt += 1) {
       try {
@@ -340,6 +344,7 @@ async function callProviderStream(params: {
         if (!emittedToken && bufferedText && params.onToken) {
           params.onToken(bufferedText);
         }
+        console.timeEnd("callProviderStream");
         return {
           text: normalized,
           provider: params.provider,
@@ -350,6 +355,7 @@ async function callProviderStream(params: {
     }
   }
 
+  console.timeEnd("callProviderStream");
   return null;
 }
 

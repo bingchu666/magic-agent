@@ -101,11 +101,13 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
   assistantMessage: Message;
   output: AgentOutput;
 }> {
+  console.time("runAgentOrchestration");
   const requestedLocale: Locale = input.locale === "en" ? "en" : "zh";
   const locale: Locale = detectReplyLocale(input.userMessage, requestedLocale);
 
   // The route has already authenticated the session and loaded its trusted
   // profile. Avoid repeating that database read on every chat turn.
+  console.time("orchestrator:resolveThread");
   const requestedThread = input.threadId
     ? await supabaseDb.getThread(input.threadId)
     : null;
@@ -115,6 +117,7 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
       input.userId,
       summarizeThreadTitle(input.userMessage, locale)
     );
+  console.timeEnd("orchestrator:resolveThread");
 
   if (!thread) {
     throw new Error("Failed to initialize thread");
@@ -192,6 +195,7 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
     provider: generation.provider,
   };
 
+  console.time("orchestrator:persistAssistantMessage");
   const assistantMessage = await supabaseDb.createMessage({
     threadId: thread.id,
     userId: input.userId,
@@ -199,7 +203,9 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
     content: output.text,
     locale,
   });
+  console.timeEnd("orchestrator:persistAssistantMessage");
 
+  console.time("orchestrator:createEvent");
   await supabaseDb.createEvent({
     userId: input.userId,
     name: "chat_completion",
@@ -211,7 +217,9 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
       usedFileInsights: output.usedFileInsights.length,
     },
   });
+  console.timeEnd("orchestrator:createEvent");
 
+  console.timeEnd("runAgentOrchestration");
   return {
     threadId: thread.id,
     userMessage,

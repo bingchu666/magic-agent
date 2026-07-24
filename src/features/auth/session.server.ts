@@ -1,25 +1,11 @@
-import { cookies } from "next/headers";
-import { createServerClient } from "@supabase/ssr";
 import { SessionUser, supabaseUserToSessionUser } from "@/features/auth/session.types";
-
-async function getServerSupabase() {
-  const cookieStore = await cookies();
-  return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll() {
-          return cookieStore.getAll();
-        },
-        setAll() {},
-      },
-    }
-  );
-}
+import { getSupabaseServerClient } from "@/lib/supabase/server";
 
 export async function readSession(): Promise<SessionUser | null> {
-  const supabase = await getServerSupabase();
+  // getSupabaseServerClient persists any refreshed access/refresh token cookies via
+  // cookieStore.set(...) — important now that API routes no longer go through
+  // middleware.ts, which used to be what kept the auth cookie fresh for API requests.
+  const supabase = await getSupabaseServerClient();
   const { data } = await supabase.auth.getUser();
   if (!data.user) return null;
   const { data: profile, error } = await supabase

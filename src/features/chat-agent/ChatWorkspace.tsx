@@ -65,7 +65,7 @@ async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export function ChatWorkspace() {
-  const { user } = useSession();
+  const { user, loading: sessionLoading } = useSession();
   const locale = user?.locale ?? "zh";
   const copy = t(locale);
 
@@ -144,12 +144,61 @@ export function ChatWorkspace() {
     }
   };
 
+  const loadThreadMessagesFromServer = async (threadId: string) => {
+    try {
+      const data = await apiJson<{ items: Message[] }>(`/api/threads/${threadId}/messages`);
+      const uiMessages: UiMessage[] = data.items.map((item) => ({
+        id: item.id,
+        role: item.role,
+        content: item.content,
+        locale: item.locale,
+        createdAt: item.createdAt,
+        lessonPayload: item.lessonPayload,
+      }));
+      threadStoreRef.current[threadId] = { messages: uiMessages };
+      if (activeThreadRef.current === threadId) {
+        setMessages(uiMessages);
+      }
+    } catch {
+      // Server unreachable — keep whatever local cache already has for this thread.
+    }
+  };
+
+  const syncThreadsFromServer = async () => {
+    try {
+      const data = await apiJson<{ items: Thread[] }>("/api/threads");
+      const serverThreads = data.items;
+      if (serverThreads.length === 0) return;
+
+      // Server is the source of truth once it responds: replace the local/placeholder
+      // thread list rather than merging, so stale or deleted-elsewhere threads don't linger.
+      setThreads(serverThreads);
+
+      const preferredActive = activeThreadRef.current;
+      const nextActive =
+        preferredActive && serverThreads.some((thread) => thread.id === preferredActive)
+          ? preferredActive
+          : serverThreads[0].id;
+
+      if (nextActive !== activeThreadRef.current) {
+        setActiveThreadId(nextActive);
+      }
+
+      await loadThreadMessagesFromServer(nextActive);
+    } catch {
+      // Offline or request failed — keep rendering whatever the local cache produced.
+    }
+  };
+
   useEffect(() => {
     activeThreadRef.current = activeThreadId;
   }, [activeThreadId]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    // Wait until the session has actually resolved — while loading, user?.id is
+    // transiently undefined and we must not key the cache to the "guest" bucket.
+    if (sessionLoading) return;
     initializedRef.current = false;
 
     const storageKey = `magic_chat_state_v4:${user?.id ?? "guest"}`;
@@ -201,7 +250,13 @@ export function ChatWorkspace() {
     initializedRef.current = true;
 
     loadFiles().catch((err) => setError(err.message));
-  }, [user?.id, locale]);
+
+    // localStorage above is only a fast first paint / offline fallback. Once logged in,
+    // the server's threads/messages tables are the source of truth and override it here.
+    if (user?.id) {
+      void syncThreadsFromServer();
+    }
+  }, [user?.id, sessionLoading, locale]);
 
   useEffect(() => {
     if (!activeThreadId) {
@@ -510,7 +565,10 @@ export function ChatWorkspace() {
               <div className="flex items-start gap-2">
                 <button
                   type="button"
-                  onClick={() => setActiveThreadId(thread.id)}
+                  onClick={() => {
+                    setActiveThreadId(thread.id);
+                    if (user?.id) void loadThreadMessagesFromServer(thread.id);
+                  }}
                   className="min-w-0 flex-1 text-left"
                 >
                   <p className="truncate text-sm font-semibold">{thread.title}</p>

@@ -1,7 +1,11 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
+import { cache } from "react";
 
-export async function getSupabaseServerClient() {
+// Memoized per request: Next.js scopes react's cache() to the current request
+// (Server Component render or Route Handler invocation), so every call here
+// within one request reuses the same client instead of constructing a new one.
+export const getSupabaseServerClient = cache(async () => {
   const cookieStore = await cookies();
 
   return createServerClient(
@@ -29,4 +33,4 @@ export async function getSupabaseServerClient() {
       },
     }
   );
-}
+});

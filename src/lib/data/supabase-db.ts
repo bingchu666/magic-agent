@@ -28,32 +28,42 @@ import { fromDatabaseRow, fromDatabaseRows, toDatabaseRow } from "@/lib/data/cas
 
 // ── Helpers ──────────────────────────────────────────────
 
-const cookieStorage = new AsyncLocalStorage<string>();
+type RequestCookieStore = {
+  cookieHeader: string;
+  client?: ReturnType<typeof createServerClient>;
+};
+
+const cookieStorage = new AsyncLocalStorage<RequestCookieStore>();
 
 /** Wrap an async operation with a captured cookie header for SSE streams */
 export function withRequestCookie<T>(cookieHeader: string, fn: () => Promise<T>): Promise<T> {
-  return cookieStorage.run(cookieHeader, fn);
+  return cookieStorage.run({ cookieHeader }, fn);
 }
 
 async function sc() {
-  const capturedCookie = cookieStorage.getStore();
-  if (capturedCookie) {
-    const cookieMap = new Map<string, string>();
-    capturedCookie.split(";").forEach((part) => {
-      const idx = part.indexOf("=");
-      if (idx > 0) cookieMap.set(part.slice(0, idx).trim(), part.slice(idx + 1));
-    });
-    return createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          get(name: string) { return cookieMap.get(name); },
-          set() {},
-          remove() {},
-        },
-      }
-    );
+  const store = cookieStorage.getStore();
+  if (store) {
+    // Reuse one client for the whole streamed request instead of constructing
+    // (and re-parsing the cookie header) a new one on every DB call.
+    if (!store.client) {
+      const cookieMap = new Map<string, string>();
+      store.cookieHeader.split(";").forEach((part) => {
+        const idx = part.indexOf("=");
+        if (idx > 0) cookieMap.set(part.slice(0, idx).trim(), part.slice(idx + 1));
+      });
+      store.client = createServerClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+        {
+          cookies: {
+            get(name: string) { return cookieMap.get(name); },
+            set() {},
+            remove() {},
+          },
+        }
+      );
+    }
+    return store.client;
   }
   return getSupabaseServerClient();
 }
@@ -829,15 +839,21 @@ export const supabaseDb = {
   },
 
   async searchTrickChunks(queryText: string, matchCount = 5) {
+    console.time("searchTrickChunks:total");
     if (process.env.VOYAGE_API_KEY) {
       try {
         const supabase = await sc();
+        console.time("embedTrickText");
         const embedding = await embedTrickText(queryText, "query");
+        console.timeEnd("embedTrickText");
+
+        console.time("searchTrickChunks:vectorRPC");
         const { data, error } = await supabase.rpc("hybrid_search_trick_chunks", {
           query_text: queryText,
           query_embedding: embedding,
           match_count: matchCount,
         });
+        console.timeEnd("searchTrickChunks:vectorRPC");
 
         if (error) {
           throw new Error(`Failed to search trick chunks: ${error.message}`);
@@ -846,7 +862,10 @@ export const supabaseDb = {
           ...row,
           searchMode: "semantic",
         }));
-        if (semanticRows.length > 0) return semanticRows;
+        if (semanticRows.length > 0) {
+          console.timeEnd("searchTrickChunks:total");
+          return semanticRows;
+        }
       } catch (error) {
         console.warn("Semantic knowledge retrieval failed; trying keyword fallback", {
           error: error instanceof Error ? error.message : String(error),
@@ -854,6 +873,10 @@ export const supabaseDb = {
       }
     }
 
-    return searchTricksByKeyword(queryText, matchCount);
+    console.time("searchTrickChunks:keywordFallback");
+    const keywordRows = await searchTricksByKeyword(queryText, matchCount);
+    console.timeEnd("searchTrickChunks:keywordFallback");
+    console.timeEnd("searchTrickChunks:total");
+    return keywordRows;
   },
 };
