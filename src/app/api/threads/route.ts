@@ -1,11 +1,11 @@
 import { jsonError, jsonOk } from "@/lib/ui/api";
 import { assertSession } from "@/features/auth/session.server";
-import { memoryDb } from "@/lib/data/memory-db";
+import { supabaseDb } from "@/lib/data/supabase-db";
 
 export async function GET(req: Request) {
   try {
-    const session = assertSession(req);
-    const threads = memoryDb.listThreads(session.id);
+    const session = await assertSession(req);
+    const threads = await supabaseDb.listThreads(session.id);
     return jsonOk({ items: threads });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unauthorized";
@@ -15,7 +15,7 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
-    const session = assertSession(req);
+    const session = await assertSession(req);
     let body: { title?: string } = {};
     try {
       body = (await req.json()) as { title?: string };
@@ -28,8 +28,8 @@ export async function POST(req: Request) {
       ? "新对话"
       : "New Thread";
 
-    const thread = memoryDb.createThread(session.id, title);
-    memoryDb.createEvent({
+    const thread = await supabaseDb.createThread(session.id, title);
+    await supabaseDb.createEvent({
       userId: session.id,
       name: "thread_created",
       payload: { threadId: thread.id },

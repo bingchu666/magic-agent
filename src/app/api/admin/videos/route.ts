@@ -1,5 +1,5 @@
 import { assertAdmin } from "@/features/auth/session.server";
-import { memoryDb } from "@/lib/data/memory-db";
+import { supabaseDb } from "@/lib/data/supabase-db";
 import { Locale, VideoDifficulty } from "@/lib/domain/types";
 import { jsonError, jsonOk } from "@/lib/ui/api";
 
@@ -14,8 +14,8 @@ function asDifficulty(input: unknown): VideoDifficulty {
 
 export async function GET(req: Request) {
   try {
-    assertAdmin(req);
-    return jsonOk({ items: memoryDb.listVideosForAdmin() });
+    await assertAdmin(req);
+    return jsonOk({ items: await supabaseDb.listVideosForAdmin() });
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Unauthorized";
     return jsonError(msg, msg === "FORBIDDEN" ? 403 : 401);
@@ -24,7 +24,7 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
-    const admin = assertAdmin(req);
+    const admin = await assertAdmin(req);
     const body = (await req.json()) as {
       title?: string;
       description?: string;
@@ -38,7 +38,7 @@ export async function POST(req: Request) {
       return jsonError("title, description, and url are required", 400);
     }
 
-    const video = memoryDb.createVideo({
+    const video = await supabaseDb.createVideo({
       createdBy: admin.id,
       title: body.title.trim(),
       description: body.description.trim(),
@@ -50,7 +50,7 @@ export async function POST(req: Request) {
         : [],
     });
 
-    memoryDb.createAuditLog({
+    await supabaseDb.createAuditLog({
       userId: admin.id,
       action: "video_created",
       details: JSON.stringify({ videoId: video.id }),

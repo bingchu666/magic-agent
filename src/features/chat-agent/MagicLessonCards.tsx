@@ -88,15 +88,22 @@ export function MagicLessonCards({ payload, locale, onQuickAsk }: Props) {
       {lessonSteps.length ? (
         <div className="space-y-2 rounded-2xl border border-black/10 bg-white p-3">
           <p className="text-sm font-semibold text-zinc-900">{copy.lesson}</p>
-          {lessonSteps.map((step, index) => (
-            <div key={`step-${index}`} className="rounded-xl border border-zinc-200 p-3">
-              <p className="text-sm font-semibold text-zinc-900">{step.step}</p>
-              <Section title={copy.audience} items={(step as any).audienceSees ?? (step as any).audience_sees} />
-              <Section title={copy.youSay} items={(step as any).youSay ?? (step as any).you_say} />
-              <Section title={copy.youDo} items={(step as any).youDo ?? (step as any).you_do} />
-              <Section title={copy.practice} items={step.practice} />
-            </div>
-          ))}
+          {lessonSteps.map((step, index) => {
+            const compatibleStep = step as typeof step & {
+              audience_sees?: unknown;
+              you_say?: unknown;
+              you_do?: unknown;
+            };
+            return (
+              <div key={`step-${index}`} className="rounded-xl border border-zinc-200 p-3">
+                <p className="text-sm font-semibold text-zinc-900">{step.step}</p>
+                <Section title={copy.audience} items={step.audienceSees ?? compatibleStep.audience_sees} />
+                <Section title={copy.youSay} items={step.youSay ?? compatibleStep.you_say} />
+                <Section title={copy.youDo} items={step.youDo ?? compatibleStep.you_do} />
+                <Section title={copy.practice} items={step.practice} />
+              </div>
+            );
+          })}
         </div>
       ) : null}
 
@@ -104,8 +111,8 @@ export function MagicLessonCards({ payload, locale, onQuickAsk }: Props) {
         <Section title={copy.checklist} items={payload.lesson?.checklist} />
       ) : null}
 
-      {toStringArray((payload.lesson as any)?.commonMistakes ?? (payload.lesson as any)?.common_mistakes).length ? (
-        <Section title={copy.mistakes} items={(payload.lesson as any)?.commonMistakes ?? (payload.lesson as any)?.common_mistakes} />
+      {toStringArray(payload.lesson?.commonMistakes ?? (payload.lesson as typeof payload.lesson & { common_mistakes?: unknown })?.common_mistakes).length ? (
+        <Section title={copy.mistakes} items={payload.lesson?.commonMistakes ?? (payload.lesson as typeof payload.lesson & { common_mistakes?: unknown })?.common_mistakes} />
       ) : null}
 
       {payload.safety ? (

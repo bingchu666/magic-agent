@@ -42,6 +42,19 @@ npm install
 npm run dev
 ```
 
+Before the first run, apply `src/lib/data/schema.sql` to a new Supabase project.
+For a project created from an earlier version of the `postgres-migration`
+branch, apply `supabase/migrations/20260722000000_fix_postgres_migration.sql`.
+Then copy `.env.example` to `.env` and fill in the Supabase, model, and Voyage
+credentials.
+
+To preview or ingest the curated trick knowledge base:
+
+```bash
+npx tsx scripts/ingest-tricks.ts --dry-run
+npx tsx scripts/ingest-tricks.ts
+```
+
 ## Deploy online (Vercel)
 
 ```bash
@@ -67,5 +80,6 @@ npm run build
 
 ## Notes
 
-- This repo currently uses an in-memory data layer for rapid iteration.
-- For production, swap `src/lib/data/memory-db.ts` with Postgres + Drizzle + pgvector adapters while keeping the same domain contracts.
+- Application data is stored in Supabase Postgres with row-level security.
+- Uploaded files use the private `file-uploads` Supabase Storage bucket.
+- Trick retrieval uses Voyage embeddings and pgvector.

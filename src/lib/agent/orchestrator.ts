@@ -1,13 +1,12 @@
 import { generateWithGateway, generateWithGatewayStream } from "@/lib/ai/model-gateway";
 import { buildContext } from "@/lib/agent/context";
 import { detectIntent } from "@/lib/agent/intent";
-import { memoryDb } from "@/lib/data/memory-db";
-import { AgentOutput, ChatStreamRequest, Locale, Message } from "@/lib/domain/types";
+import { supabaseDb } from "@/lib/data/supabase-db";
+import { AgentOutput, ChatHistoryMessage, ChatStreamRequest, Locale, Message } from "@/lib/domain/types";
+import { normalizeChatHistory, removeDuplicateCurrentUserTurn } from "@/lib/agent/history";
 
 type OrchestratorInput = ChatStreamRequest & {
   userId: string;
-  userName: string;
-  userRole: "user" | "admin";
   onThreadReady?: (threadId: string) => void;
   onModelToken?: (text: string) => void;
 };
@@ -54,22 +53,11 @@ function summarizeThreadTitle(message: string, locale: Locale) {
   return plain.length > 28 ? `${snippet}...` : snippet;
 }
 
-function extractLatestAssistantFromHistory(history: string | undefined) {
-  if (!history) return null;
-  const lines = history
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(-20);
-
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const line = lines[i];
-    if (/^ASSISTANT:/i.test(line)) {
-      const content = line.replace(/^ASSISTANT:\s*/i, "").trim();
-      return content || null;
-    }
-  }
-  return null;
+function extractLatestAssistantFromHistory(history: ChatHistoryMessage[] | undefined) {
+  return [...(history ?? [])]
+    .reverse()
+    .find((message) => message.role === "assistant")
+    ?.content.trim() || null;
 }
 
 function parseRequestedPoint(text: string) {
@@ -116,29 +104,46 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
   const requestedLocale: Locale = input.locale === "en" ? "en" : "zh";
   const locale: Locale = detectReplyLocale(input.userMessage, requestedLocale);
 
-  memoryDb.ensureUser({
-    id: input.userId,
-    name: input.userName,
-    role: input.userRole,
-    locale: requestedLocale,
-  });
-
-  const thread =
-    input.threadId && memoryDb.getThread(input.threadId)
-      ? memoryDb.getThread(input.threadId)
-      : memoryDb.createThread(input.userId, summarizeThreadTitle(input.userMessage, locale));
+  // The route has already authenticated the session and loaded its trusted
+  // profile. Avoid repeating that database read on every chat turn.
+  const requestedThread = input.threadId
+    ? await supabaseDb.getThread(input.threadId)
+    : null;
+  const thread = requestedThread?.userId === input.userId
+    ? requestedThread
+    : await supabaseDb.createThread(
+      input.userId,
+      summarizeThreadTitle(input.userMessage, locale)
+    );
 
   if (!thread) {
     throw new Error("Failed to initialize thread");
   }
   if (input.onThreadReady) input.onThreadReady(thread.id);
 
-  const previousAssistantReply = [...memoryDb.listMessages(thread.id)]
-    .reverse()
-    .find((message) => message.role === "assistant")
-    ?.content || extractLatestAssistantFromHistory(input.clientHistory) || undefined;
+  const intent = detectIntent(input.userMessage);
+  const safety = { mode: "allow" as const };
+  const clientHistory = removeDuplicateCurrentUserTurn(
+    normalizeChatHistory(input.clientHistory),
+    input.userMessage
+  );
+  const context = await buildContext({
+    threadId: thread.id,
+    userId: input.userId,
+    locale: requestedLocale,
+    userMessage: input.userMessage,
+    attachmentIds: input.attachmentIds,
+    clientHistory,
+  });
 
-  const userMessage = memoryDb.createMessage({
+  const history = clientHistory.length > 0
+    ? clientHistory
+    : normalizeChatHistory(context.history);
+  const previousAssistantReply = extractLatestAssistantFromHistory(history) || undefined;
+
+  // Persist the user turn while generation starts so this required write does
+  // not add latency before the first streamed token.
+  const userMessagePromise = supabaseDb.createMessage({
     threadId: thread.id,
     userId: input.userId,
     role: "user",
@@ -147,17 +152,6 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
     attachmentIds: input.attachmentIds,
   });
 
-  const intent = detectIntent(input.userMessage);
-  const safety = { mode: "allow" as const };
-  const context = buildContext({
-    threadId: thread.id,
-    userId: input.userId,
-    locale: requestedLocale,
-    attachmentIds: input.attachmentIds,
-  });
-  const history = input.clientHistory?.trim()
-    ? input.clientHistory.trim().slice(-5000)
-    : context.history;
   const requestedPoint = parseRequestedPoint(input.userMessage);
   const continuationTarget = extractPointSegment(previousAssistantReply, requestedPoint);
   const followUp = isExplicitFollowUp(input.userMessage);
@@ -168,15 +162,20 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
     userMessage: input.userMessage,
     history,
     fileContext: context.fileContext,
+    retrievedKnowledge: context.retrievedKnowledge,
     avoidRepeatOf: followUp ? previousAssistantReply : undefined,
     continuationTarget: continuationTarget
       ? `Point ${requestedPoint}: ${continuationTarget}`
       : undefined,
   };
 
-  const generation = input.onModelToken
-    ? await generateWithGatewayStream(generationInput, input.onModelToken)
-    : await generateWithGateway(generationInput);
+  const generationPromise = input.onModelToken
+    ? generateWithGatewayStream(generationInput, input.onModelToken)
+    : generateWithGateway(generationInput);
+  const [generation, userMessage] = await Promise.all([
+    generationPromise,
+    userMessagePromise,
+  ]);
 
   const finalText = normalizeResponseText(generation.text);
 
@@ -193,7 +192,7 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
     provider: generation.provider,
   };
 
-  const assistantMessage = memoryDb.createMessage({
+  const assistantMessage = await supabaseDb.createMessage({
     threadId: thread.id,
     userId: input.userId,
     role: "assistant",
@@ -201,7 +200,7 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
     locale,
   });
 
-  memoryDb.createEvent({
+  await supabaseDb.createEvent({
     userId: input.userId,
     name: "chat_completion",
     payload: {

@@ -1,8 +1,9 @@
 "use client";
 
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { Locale } from "@/lib/domain/types";
-import { SessionUser } from "@/features/auth/session.types";
+import { SessionUser, supabaseUserToSessionUser } from "@/features/auth/session.types";
+import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
 type SessionContextValue = {
   user: SessionUser | null;
@@ -15,105 +16,74 @@ type SessionContextValue = {
 const SessionContext = createContext<SessionContextValue | null>(null);
 const LOCALE_STORAGE_KEY = "magic_locale_v1";
 
-function asLocale(value: string | null | undefined): Locale | null {
-  if (value === "zh" || value === "en") return value;
-  return null;
-}
-
-function getPreferredLocale(): Locale {
-  if (typeof window === "undefined") return "zh";
-  const saved = asLocale(window.localStorage.getItem(LOCALE_STORAGE_KEY));
-  if (saved) return saved;
-  const lang = (navigator.language || "").toLowerCase();
-  return lang.startsWith("zh") ? "zh" : "en";
-}
-
 function persistPreferredLocale(locale: Locale) {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(LOCALE_STORAGE_KEY, locale);
 }
 
-async function fetchSession() {
-  const res = await fetch("/api/auth/session", { cache: "no-store" });
-  if (!res.ok) return null;
-  const json = (await res.json()) as { user?: SessionUser };
-  return json.user ?? null;
-}
-
-async function bootstrapGuestSession(locale: Locale) {
-  const res = await fetch("/api/auth/demo-login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      name: "Guest",
-      locale,
-      role: "user",
-    }),
-  });
-  if (!res.ok) return null;
-  const json = (await res.json()) as { user?: SessionUser };
-  return json.user ?? null;
-}
-
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<SessionUser | null>(null);
   const [loading, setLoading] = useState(true);
+  const supabase = useMemo(() => getSupabaseBrowserClient(), []);
 
-  const refresh = async (preferredLocale?: Locale) => {
-    let current = await fetchSession();
-    if (!current) {
-      current = await bootstrapGuestSession(preferredLocale || getPreferredLocale());
-    }
-    if (current?.locale) persistPreferredLocale(current.locale);
-    setUser(current);
-  };
+  const loadUser = useCallback(async (current: Awaited<ReturnType<typeof supabase.auth.getUser>>["data"]["user"]) => {
+    if (!current) return null;
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("name, role, locale")
+      .eq("id", current.id)
+      .maybeSingle();
+    return supabaseUserToSessionUser(current, profile);
+  }, [supabase]);
+
+  const refresh = useCallback(async () => {
+    const { data } = await supabase.auth.getSession();
+    const current = data.session?.user ?? null;
+    setUser(await loadUser(current));
+  }, [loadUser, supabase]);
 
   useEffect(() => {
-    refresh(getPreferredLocale()).finally(() => setLoading(false));
-  }, []);
+    supabase.auth.getSession().then(async ({ data }) => {
+      const u = data.session?.user ?? null;
+      setUser(await loadUser(u));
+      setLoading(false);
+    });
 
-  const setLocale = async (locale: Locale) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      const u = session?.user ?? null;
+      setTimeout(() => {
+        loadUser(u).then(setUser);
+      }, 0);
+    });
+
+    return () => subscription.unsubscribe();
+  }, [loadUser, supabase]);
+
+  const setLocale = useCallback(async (locale: Locale) => {
     persistPreferredLocale(locale);
-
-    if (!user) {
-      await refresh(locale);
-      return;
-    }
+    if (!user) return;
 
     const previous = user.locale;
     setUser((prev) => (prev ? { ...prev, locale } : prev));
 
     try {
-      const res = await fetch("/api/auth/demo-login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: user.name,
-          locale,
-          role: user.role,
-        }),
-      });
-      if (!res.ok) throw new Error("Failed to switch locale");
-      const json = (await res.json()) as { user?: SessionUser };
-      if (json.user) {
-        setUser(json.user);
-      } else {
-        await refresh(locale);
-      }
+      const { error: authError } = await supabase.auth.updateUser({ data: { locale } });
+      if (authError) throw authError;
+      const { error: profileError } = await supabase.from("profiles").update({ locale }).eq("id", user.id);
+      if (profileError) throw profileError;
     } catch {
       setUser((prev) => (prev ? { ...prev, locale: previous } : prev));
-      await refresh(previous);
     }
-  };
+  }, [supabase, user]);
 
-  const signOut = async () => {
-    await fetch("/api/auth/logout", { method: "POST" });
-    await refresh();
-  };
+  const signOut = useCallback(async () => {
+    await supabase.auth.signOut();
+    setUser(null);
+  }, [supabase]);
 
   const value = useMemo(
     () => ({ user, loading, refresh, setLocale, signOut }),
-    [user, loading]
+    [user, loading, refresh, setLocale, signOut]
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

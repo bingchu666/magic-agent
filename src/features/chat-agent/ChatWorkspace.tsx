@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import Link from "next/link";
-import { FileAsset, LessonPayload, Message, Thread } from "@/lib/domain/types";
+import { ChatHistoryMessage, FileAsset, LessonPayload, Message, Thread } from "@/lib/domain/types";
 import { createId } from "@/lib/domain/utils";
 import { useSession } from "@/features/auth/session.client";
 import { consumeSseStream } from "@/features/chat-agent/sse";
@@ -28,13 +28,15 @@ function createLocalThread(userId: string, locale: "zh" | "en"): Thread {
   };
 }
 
-function buildClientHistory(messages: UiMessage[]) {
+function buildClientHistory(messages: UiMessage[]): ChatHistoryMessage[] {
   return messages
     .filter((item) => item.role === "user" || item.role === "assistant")
-    .slice(-16)
-    .map((item) => `${item.role === "user" ? "USER" : "ASSISTANT"}: ${item.content}`)
-    .join("\n")
-    .slice(-8000);
+    .filter((item) => item.content.trim().length > 0)
+    .slice(-30)
+    .map((item) => ({
+      role: item.role as "user" | "assistant",
+      content: item.content,
+    }));
 }
 
 async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -199,7 +201,7 @@ export function ChatWorkspace() {
     initializedRef.current = true;
 
     loadFiles().catch((err) => setError(err.message));
-  }, [user?.id]);
+  }, [user?.id, locale]);
 
   useEffect(() => {
     if (!activeThreadId) {
@@ -293,9 +295,29 @@ export function ChatWorkspace() {
         touchThread(threadId);
       }
 
-      const historyForRequest = buildClientHistory([...messages, userMessage]);
-      let streamFailed = false;
-
+      // The latest user message is sent separately as userMessage. History only
+      // contains completed prior turns so the model never receives it twice.
+      const historyForRequest = buildClientHistory(messages);
+      let pendingTokenText = "";
+      let tokenFlushTimer: number | null = null;
+      const flushPendingTokens = () => {
+        tokenFlushTimer = null;
+        const text = pendingTokenText;
+        pendingTokenText = "";
+        if (!text) return;
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantMessageId
+              ? { ...message, content: `${message.content}${text}` }
+              : message
+          )
+        );
+      };
+      const queueToken = (text: string) => {
+        pendingTokenText += text;
+        if (tokenFlushTimer !== null) return;
+        tokenFlushTimer = window.setTimeout(flushPendingTokens, 32);
+      };
       const res = await fetch("/api/chat/stream", {
         method: "POST",
         headers: {
@@ -311,8 +333,16 @@ export function ChatWorkspace() {
       });
 
       if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(text || "Failed to stream response");
+        const contentType = res.headers.get("content-type") || "";
+        const text = contentType.includes("text/html")
+          ? ""
+          : await res.text().catch(() => "");
+        throw new Error(
+          text ||
+            (locale === "zh"
+              ? `聊天服务暂时不可用（${res.status}）`
+              : `Chat service is temporarily unavailable (${res.status})`)
+        );
       }
 
       await consumeSseStream(res, {
@@ -324,15 +354,11 @@ export function ChatWorkspace() {
           }
         },
         token: (payload) => {
-          setMessages((prev) =>
-            prev.map((message) =>
-              message.id === assistantMessageId
-                ? { ...message, content: `${message.content}${payload.text}` }
-                : message
-            )
-          );
+          queueToken(payload.text);
         },
         cards: (payload) => {
+          if (tokenFlushTimer !== null) window.clearTimeout(tokenFlushTimer);
+          flushPendingTokens();
           setMessages((prev) =>
             prev.map((message) =>
               message.id === assistantMessageId
@@ -346,16 +372,18 @@ export function ChatWorkspace() {
           );
         },
         video_recommendations: () => {},
-        done: () => {},
+        done: () => {
+          if (tokenFlushTimer !== null) window.clearTimeout(tokenFlushTimer);
+          flushPendingTokens();
+        },
         error: (payload) => {
-          streamFailed = true;
+          if (tokenFlushTimer !== null) window.clearTimeout(tokenFlushTimer);
+          flushPendingTokens();
           setError(payload.message);
         },
       });
-
-      if (!streamFailed) {
-        await loadFiles();
-      }
+      if (tokenFlushTimer !== null) window.clearTimeout(tokenFlushTimer);
+      flushPendingTokens();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";
       const fallbackText = locale === "zh" ? "请求失败，请稍后重试。" : "Request failed. Please retry.";

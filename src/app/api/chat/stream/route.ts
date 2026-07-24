@@ -1,6 +1,8 @@
 import { assertSession } from "@/features/auth/session.server";
 import { runAgentOrchestration } from "@/lib/agent/orchestrator";
+import { withRequestCookie } from "@/lib/data/supabase-db";
 import { ChatSsePayloadMap, ChatStreamRequest, SseEventType } from "@/lib/domain/types";
+import { normalizeChatHistory } from "@/lib/agent/history";
 
 function sseLine<T extends SseEventType>(event: T, data: ChatSsePayloadMap[T]) {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -34,17 +36,22 @@ function chunkText(text: string) {
 
 export async function POST(req: Request) {
   try {
-    const session = assertSession(req);
+    const session = await assertSession(req);
     const body = (await req.json()) as ChatStreamRequest;
 
     if (!body?.userMessage || typeof body.userMessage !== "string") {
       return new Response("Missing userMessage", { status: 400 });
     }
 
+    // Capture cookies before entering the ReadableStream —
+    // next/headers cookies() is unavailable inside the stream callback.
+    const cookieHeader = req.headers.get("cookie") || "";
+
     const encoder = new TextEncoder();
 
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
+        await withRequestCookie(cookieHeader, async () => {
         const write = <T extends SseEventType>(event: T, payload: ChatSsePayloadMap[T]) => {
           controller.enqueue(encoder.encode(sseLine(event, payload)));
         };
@@ -53,6 +60,8 @@ export async function POST(req: Request) {
         let threadEventSent = false;
         let streamedAnyToken = false;
         let threadIdFromCallback: string | null = null;
+        const chatStartedAt = Date.now();
+        let firstTokenLogged = false;
 
         try {
           const result = await runAgentOrchestration({
@@ -60,10 +69,8 @@ export async function POST(req: Request) {
             userMessage: body.userMessage,
             locale: body.locale === "en" ? "en" : "zh",
             attachmentIds: Array.isArray(body.attachmentIds) ? body.attachmentIds : [],
-            clientHistory: typeof body.clientHistory === "string" ? body.clientHistory : undefined,
+            clientHistory: normalizeChatHistory(body.clientHistory),
             userId: session.id,
-            userName: session.name,
-            userRole: session.role,
             onThreadReady: (threadId) => {
               threadIdFromCallback = threadId;
               if (threadEventSent) return;
@@ -75,6 +82,12 @@ export async function POST(req: Request) {
             },
             onModelToken: (text) => {
               if (!text) return;
+              if (!firstTokenLogged) {
+                firstTokenLogged = true;
+                console.info("Chat stream first token", {
+                  durationMs: Date.now() - chatStartedAt,
+                });
+              }
               streamedAnyToken = true;
               write("token", { text });
             },
@@ -106,6 +119,10 @@ export async function POST(req: Request) {
             refreshReason: result.output.refreshReason,
             goalTopic: result.output.goalTopic,
           });
+          console.info("Chat stream completed", {
+            provider: result.output.provider,
+            durationMs: Date.now() - chatStartedAt,
+          });
         } catch (error) {
           streamFailed = true;
           const message = error instanceof Error ? error.message : "Unknown error";
@@ -117,6 +134,7 @@ export async function POST(req: Request) {
             controller.close();
           }
         }
+        }); // withRequestCookie
       },
       cancel(reason) {
         console.warn("SSE canceled", reason);

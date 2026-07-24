@@ -204,7 +204,12 @@ export type ChatStreamRequest = {
   userMessage: string;
   locale: Locale;
   attachmentIds?: string[];
-  clientHistory?: string;
+  clientHistory?: ChatHistoryMessage[];
+};
+
+export type ChatHistoryMessage = {
+  role: "user" | "assistant";
+  content: string;
 };
 
 export type SseEventType =

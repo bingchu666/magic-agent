@@ -3,7 +3,7 @@ import { jsonError, jsonOk } from "@/lib/ui/api";
 
 export async function GET(req: Request) {
   try {
-    assertSession(req);
+    await assertSession(req);
     return jsonOk({
       items: [],
       meta: {
