@@ -510,6 +510,8 @@ export function ChatWorkspace() {
     setDeletingThreadId(threadId);
     setError(null);
     try {
+      await apiJson(`/api/threads/${threadId}`, { method: "DELETE" });
+
       setThreads((prev) => {
         const next = prev.filter((item) => item.id !== threadId);
         if (activeThreadRef.current === threadId) {

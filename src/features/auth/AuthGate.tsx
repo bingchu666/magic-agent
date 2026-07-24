@@ -8,21 +8,24 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const { user, loading } = useSession();
+  const isAuthRoute = pathname === "/auth" || pathname.startsWith("/auth/");
 
   useEffect(() => {
     if (loading) return;
 
-    // Not logged in + not on auth page → redirect to /auth
-    if (!user && pathname !== "/auth") {
+    // Not logged in + not on an auth route → redirect to /auth
+    if (!user && !isAuthRoute) {
       router.replace("/auth");
       return;
     }
 
     // Logged in + on /auth or / → redirect to /chat
+    // (reset-password is excluded: a recovery link signs the user in temporarily
+    // so they can set a new password, and shouldn't be bounced to /chat)
     if (user && (pathname === "/auth" || pathname === "/")) {
       router.replace("/chat");
     }
-  }, [loading, user, pathname, router]);
+  }, [loading, user, pathname, isAuthRoute, router]);
 
   if (loading) {
     return (
@@ -34,8 +37,8 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // Don't render children if not authenticated and not on /auth
-  if (!user && pathname !== "/auth") return null;
+  // Don't render children if not authenticated and not on an auth route
+  if (!user && !isAuthRoute) return null;
 
   return <>{children}</>;
 }
