@@ -27,6 +27,10 @@ type Copy = {
   editMessage: string;
   confirmEdit: string;
   cancelEdit: string;
+  regenerateMessage: string;
+  regenerating: string;
+  previousVersion: string;
+  nextVersion: string;
 };
 
 const dictionary: Record<Locale, Copy> = {
@@ -57,6 +61,10 @@ const dictionary: Record<Locale, Copy> = {
     editMessage: "编辑",
     confirmEdit: "确认",
     cancelEdit: "取消",
+    regenerateMessage: "重新生成",
+    regenerating: "正在重新生成…",
+    previousVersion: "上一个版本",
+    nextVersion: "下一个版本",
   },
   en: {
     appName: "Magic Agent",
@@ -85,6 +93,10 @@ const dictionary: Record<Locale, Copy> = {
     editMessage: "Edit",
     confirmEdit: "Confirm",
     cancelEdit: "Cancel",
+    regenerateMessage: "Regenerate",
+    regenerating: "Regenerating…",
+    previousVersion: "Previous version",
+    nextVersion: "Next version",
   },
 };
 

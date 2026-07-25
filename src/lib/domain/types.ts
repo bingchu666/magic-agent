@@ -70,6 +70,10 @@ export type Message = {
   locale: Locale;
   attachmentIds?: string[];
   lessonPayload?: LessonPayload;
+  // Alternate regenerated replies for an assistant message (role: "assistant"
+  // only). `content` always mirrors `versions[activeVersionIndex]` once set.
+  versions?: string[] | null;
+  activeVersionIndex?: number;
   createdAt: string;
 };
 

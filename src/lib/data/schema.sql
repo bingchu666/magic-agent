@@ -34,6 +34,10 @@ CREATE TABLE messages (
   locale TEXT NOT NULL CHECK (locale IN ('zh', 'en')),
   attachment_ids TEXT[],
   lesson_payload JSONB,
+  -- Alternate regenerated replies for an assistant message. Empty/null until
+  -- the first "regenerate" — `content` always mirrors versions[active_version_index].
+  versions JSONB,
+  active_version_index INT NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

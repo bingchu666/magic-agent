@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import Link from "next/link";
-import { Pencil, Square } from "lucide-react";
+import { Loader2, Pencil, RefreshCw, Square } from "lucide-react";
 import { ChatHistoryMessage, FileAsset, LessonPayload, Message, Thread } from "@/lib/domain/types";
 import { createId } from "@/lib/domain/utils";
 import { useSession } from "@/features/auth/session.client";
@@ -12,10 +12,14 @@ import { MagicLessonCards } from "@/features/chat-agent/MagicLessonCards";
 import { AssistantMarkdown } from "@/features/chat-agent/AssistantMarkdown";
 import { CopyMessageButton } from "@/features/chat-agent/CopyMessageButton";
 import { QuickOptionsPrompt } from "@/features/chat-agent/QuickOptionsPrompt";
+import { MessageVersionSwitcher } from "@/features/chat-agent/MessageVersionSwitcher";
 import { extractQuickOptions } from "@/lib/agent/optionsBlock";
 import { t } from "@/lib/ui/i18n";
 
-type UiMessage = Pick<Message, "id" | "role" | "content" | "locale" | "createdAt" | "lessonPayload">;
+type UiMessage = Pick<
+  Message,
+  "id" | "role" | "content" | "locale" | "createdAt" | "lessonPayload" | "versions" | "activeVersionIndex"
+>;
 
 type ThreadRuntimeState = {
   messages: UiMessage[];
@@ -86,6 +90,7 @@ export function ChatWorkspace() {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingDraft, setEditingDraft] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
+  const [regeneratingMessageId, setRegeneratingMessageId] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -162,6 +167,8 @@ export function ChatWorkspace() {
         locale: item.locale,
         createdAt: item.createdAt,
         lessonPayload: item.lessonPayload,
+        versions: item.versions,
+        activeVersionIndex: item.activeVersionIndex,
       }));
       threadStoreRef.current[threadId] = { messages: uiMessages };
       if (activeThreadRef.current === threadId) {
@@ -599,6 +606,60 @@ export function ChatWorkspace() {
     }
   };
 
+  const regenerateMessage = async (message: UiMessage) => {
+    if (!activeThreadId || regeneratingMessageId) return;
+
+    setRegeneratingMessageId(message.id);
+    setError(null);
+    try {
+      const data = await apiJson<{ item: Message }>(
+        `/api/threads/${activeThreadId}/messages/${message.id}/regenerate`,
+        { method: "POST" }
+      );
+      setMessages((prev) =>
+        prev.map((item) =>
+          item.id === message.id
+            ? {
+                ...item,
+                content: data.item.content,
+                versions: data.item.versions,
+                activeVersionIndex: data.item.activeVersionIndex,
+              }
+            : item
+        )
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to regenerate message");
+    } finally {
+      setRegeneratingMessageId(null);
+    }
+  };
+
+  const switchMessageVersion = async (message: UiMessage, nextIndex: number) => {
+    const versions = message.versions ?? [];
+    if (!activeThreadId || nextIndex < 0 || nextIndex >= versions.length) return;
+
+    // The full versions array is already on the client, so the switch itself
+    // is instant; the PATCH just persists the choice for the next page load.
+    setMessages((prev) =>
+      prev.map((item) =>
+        item.id === message.id
+          ? { ...item, content: versions[nextIndex], activeVersionIndex: nextIndex }
+          : item
+      )
+    );
+
+    try {
+      await apiJson(`/api/threads/${activeThreadId}/messages/${message.id}/active-version`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ activeVersionIndex: nextIndex }),
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to switch message version");
+    }
+  };
+
   const uploadFromComposer = async (list: FileList | null) => {
     if (!list || list.length === 0 || uploadingAttachments) return;
     setUploadingAttachments(true);
@@ -780,99 +841,143 @@ export function ChatWorkspace() {
                   isAssistant && !hasCards
                     ? extractQuickOptions(message.content)
                     : { cleanedContent: message.content, quickOptions: null };
-                const canCopy = isAssistant && cleanedContent.trim().length > 0;
                 const isEditing = !isAssistant && editingMessageId === message.id;
+                const isRegenerating = isAssistant && regeneratingMessageId === message.id;
+                const canCopy = !isEditing && cleanedContent.trim().length > 0;
                 const canEdit = !isAssistant && !editingMessageId;
+                const canRegenerate = isAssistant && !hasCards;
+                const versions = isAssistant ? message.versions ?? [] : [];
+                const showVersionSwitcher = isAssistant && !hasCards && versions.length > 1;
                 return (
                   <div key={message.id} className={clsx("flex", isAssistant ? "justify-start" : "justify-end")}>
                     <div
                       className={clsx(
-                        "flex max-w-[92%] flex-col",
+                        "group flex max-w-[92%] flex-col",
                         isAssistant ? "items-start" : "items-end"
                       )}
                     >
-                      <div className="group relative">
-                        <div
-                          className={clsx(
-                            "break-words rounded-2xl px-4 py-3 text-[15px] leading-7",
-                            isAssistant
-                              ? "border border-zinc-200 bg-zinc-50 text-zinc-800"
-                              : "bg-[#202123] text-white",
-                            isEditing && "w-full min-w-[260px]"
-                          )}
-                        >
-                          {isEditing ? (
-                            <div className="flex flex-col gap-2">
-                              <textarea
-                                value={editingDraft}
-                                onChange={(event) => setEditingDraft(event.target.value)}
-                                rows={Math.min(8, Math.max(2, editingDraft.split("\n").length))}
-                                autoFocus
-                                className="w-full resize-none rounded-lg border border-white/30 bg-white/10 px-2 py-1.5 text-[15px] leading-7 text-white outline-none focus:border-white/60"
-                                onKeyDown={(event) => {
-                                  if (event.nativeEvent.isComposing) return;
-                                  if (event.key === "Escape") {
-                                    event.preventDefault();
-                                    cancelEditingMessage();
-                                  }
-                                }}
-                              />
-                              <div className="flex items-center justify-end gap-2">
-                                <button
-                                  type="button"
-                                  onClick={cancelEditingMessage}
-                                  disabled={savingEdit}
-                                  className="rounded-full bg-white/15 px-3 py-1 text-xs font-semibold text-white hover:bg-white/25 disabled:opacity-50"
-                                >
-                                  {copy.cancelEdit}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => void confirmEditMessage()}
-                                  disabled={savingEdit || !editingDraft.trim()}
-                                  className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-[#202123] hover:bg-zinc-100 disabled:opacity-50"
-                                >
-                                  {savingEdit ? "..." : copy.confirmEdit}
-                                </button>
-                              </div>
-                            </div>
-                          ) : hasCards ? (
-                            <MagicLessonCards
-                              payload={message.lessonPayload!}
-                              locale={locale}
-                              onQuickAsk={(prompt) => {
-                                void sendMessage(prompt);
+                      <div
+                        className={clsx(
+                          "break-words rounded-2xl px-4 py-3 text-[15px] leading-7",
+                          isAssistant
+                            ? "border border-zinc-200 bg-zinc-50 text-zinc-800"
+                            : "bg-[#202123] text-white",
+                          isEditing && "w-full min-w-[260px]"
+                        )}
+                      >
+                        {isEditing ? (
+                          <div className="flex flex-col gap-2">
+                            <textarea
+                              value={editingDraft}
+                              onChange={(event) => setEditingDraft(event.target.value)}
+                              rows={Math.min(8, Math.max(2, editingDraft.split("\n").length))}
+                              autoFocus
+                              className="w-full resize-none rounded-lg border border-white/30 bg-white/10 px-2 py-1.5 text-[15px] leading-7 text-white outline-none focus:border-white/60"
+                              onKeyDown={(event) => {
+                                if (event.nativeEvent.isComposing) return;
+                                if (event.key === "Escape") {
+                                  event.preventDefault();
+                                  cancelEditingMessage();
+                                }
                               }}
                             />
-                          ) : isAssistant ? (
-                            <AssistantMarkdown content={cleanedContent || (sending ? "..." : "")} />
-                          ) : (
-                            <p className="whitespace-pre-wrap">{message.content || (sending ? "..." : "")}</p>
-                          )}
-                        </div>
-                        {canCopy ? (
-                          <div className="absolute left-1 top-full z-10 mt-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
-                            <CopyMessageButton
-                              content={cleanedContent}
-                              label={copy.copyMessage}
-                              copiedLabel={copy.copiedMessage}
-                            />
+                            <div className="flex items-center justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={cancelEditingMessage}
+                                disabled={savingEdit}
+                                className="rounded-full bg-white/15 px-3 py-1 text-xs font-semibold text-white hover:bg-white/25 disabled:opacity-50"
+                              >
+                                {copy.cancelEdit}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void confirmEditMessage()}
+                                disabled={savingEdit || !editingDraft.trim()}
+                                className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-[#202123] hover:bg-zinc-100 disabled:opacity-50"
+                              >
+                                {savingEdit ? "..." : copy.confirmEdit}
+                              </button>
+                            </div>
                           </div>
-                        ) : null}
-                        {canEdit ? (
-                          <div className="absolute right-1 top-full z-10 mt-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
-                            <button
-                              type="button"
-                              onClick={() => startEditingMessage(message)}
-                              aria-label={copy.editMessage}
-                              title={copy.editMessage}
-                              className="inline-flex items-center justify-center rounded-md p-1 text-zinc-400 transition hover:bg-zinc-200 hover:text-zinc-700"
-                            >
-                              <Pencil className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
-                        ) : null}
+                        ) : hasCards ? (
+                          <MagicLessonCards
+                            payload={message.lessonPayload!}
+                            locale={locale}
+                            onQuickAsk={(prompt) => {
+                              void sendMessage(prompt);
+                            }}
+                          />
+                        ) : isAssistant ? (
+                          <AssistantMarkdown content={cleanedContent || (sending ? "..." : "")} />
+                        ) : (
+                          <p className="whitespace-pre-wrap">{message.content || (sending ? "..." : "")}</p>
+                        )}
                       </div>
+                      {!isEditing && (canCopy || canEdit || canRegenerate || isRegenerating || showVersionSwitcher) ? (
+                        <div
+                          className={clsx(
+                            "mt-1 flex flex-wrap items-center gap-2",
+                            isAssistant ? "justify-start" : "justify-end"
+                          )}
+                        >
+                          {canCopy || canEdit || canRegenerate ? (
+                            <div
+                              className={clsx(
+                                "flex items-center gap-1 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100",
+                                isRegenerating ? "opacity-100" : "opacity-0"
+                              )}
+                            >
+                              {canCopy ? (
+                                <CopyMessageButton
+                                  content={cleanedContent}
+                                  label={copy.copyMessage}
+                                  copiedLabel={copy.copiedMessage}
+                                />
+                              ) : null}
+                              {canEdit ? (
+                                <button
+                                  type="button"
+                                  onClick={() => startEditingMessage(message)}
+                                  aria-label={copy.editMessage}
+                                  title={copy.editMessage}
+                                  className="inline-flex items-center justify-center rounded-md p-1 text-zinc-400 transition hover:bg-zinc-200 hover:text-zinc-700"
+                                >
+                                  <Pencil className="h-3.5 w-3.5" />
+                                </button>
+                              ) : null}
+                              {canRegenerate ? (
+                                <button
+                                  type="button"
+                                  onClick={() => void regenerateMessage(message)}
+                                  disabled={Boolean(regeneratingMessageId)}
+                                  aria-label={isRegenerating ? copy.regenerating : copy.regenerateMessage}
+                                  title={isRegenerating ? copy.regenerating : copy.regenerateMessage}
+                                  className="inline-flex items-center justify-center rounded-md p-1 text-zinc-400 transition hover:bg-zinc-200 hover:text-zinc-700 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+                                >
+                                  {isRegenerating ? (
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  ) : (
+                                    <RefreshCw className="h-3.5 w-3.5" />
+                                  )}
+                                </button>
+                              ) : null}
+                            </div>
+                          ) : null}
+                          {isRegenerating ? (
+                            <span className="text-xs text-zinc-400">{copy.regenerating}</span>
+                          ) : showVersionSwitcher ? (
+                            <MessageVersionSwitcher
+                              index={message.activeVersionIndex ?? versions.length - 1}
+                              total={versions.length}
+                              onChange={(nextIndex) => void switchMessageVersion(message, nextIndex)}
+                              prevLabel={copy.previousVersion}
+                              nextLabel={copy.nextVersion}
+                              disabled={Boolean(regeneratingMessageId)}
+                            />
+                          ) : null}
+                        </div>
+                      ) : null}
                       {quickOptions ? (
                         <QuickOptionsPrompt
                           question={quickOptions.question}

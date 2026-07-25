@@ -242,3 +242,91 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
     output,
   };
 }
+
+/**
+ * Regenerates one assistant reply: finds the user message that triggered it,
+ * rebuilds the same context that turn originally had access to, calls the
+ * generation logic again, and appends the result as a new entry in that
+ * message's `versions` array (making it the active version).
+ */
+export async function regenerateAssistantMessage(params: {
+  threadId: string;
+  messageId: string;
+  userId: string;
+}): Promise<
+  | { ok: true; message: Message }
+  | { ok: false; reason: "NOT_FOUND" | "NOT_EDITABLE" }
+> {
+  console.time("regenerateAssistantMessage");
+  const messages = await supabaseDb.listMessages(params.threadId);
+  const index = messages.findIndex((item) => item.id === params.messageId);
+  if (index === -1) {
+    console.timeEnd("regenerateAssistantMessage");
+    return { ok: false, reason: "NOT_FOUND" };
+  }
+
+  const target = messages[index];
+  if (target.role !== "assistant") {
+    console.timeEnd("regenerateAssistantMessage");
+    return { ok: false, reason: "NOT_EDITABLE" };
+  }
+
+  let triggerIndex = -1;
+  for (let i = index - 1; i >= 0; i -= 1) {
+    if (messages[i].role === "user") {
+      triggerIndex = i;
+      break;
+    }
+  }
+  if (triggerIndex === -1) {
+    console.timeEnd("regenerateAssistantMessage");
+    return { ok: false, reason: "NOT_FOUND" };
+  }
+
+  const triggerMessage = messages[triggerIndex];
+  const history: ChatHistoryMessage[] = messages
+    .slice(0, triggerIndex)
+    .filter((item) => item.role === "user" || item.role === "assistant")
+    .map((item) => ({ role: item.role as "user" | "assistant", content: item.content }));
+
+  const requestedLocale = triggerMessage.locale;
+  const locale = detectReplyLocale(triggerMessage.content, requestedLocale);
+  const intent = detectIntent(triggerMessage.content);
+
+  const context = await buildContext({
+    threadId: params.threadId,
+    userId: params.userId,
+    locale: requestedLocale,
+    userMessage: triggerMessage.content,
+    attachmentIds: triggerMessage.attachmentIds,
+    clientHistory: history,
+  });
+
+  const generation = await generateWithGateway({
+    locale,
+    intent,
+    userMessage: triggerMessage.content,
+    history,
+    fileContext: context.fileContext,
+    retrievedKnowledge: context.retrievedKnowledge,
+  });
+
+  const newContent = normalizeResponseText(generation.text);
+  const baseVersions =
+    Array.isArray(target.versions) && target.versions.length > 0 ? target.versions : [target.content];
+  const versions = [...baseVersions, newContent];
+  const activeVersionIndex = versions.length - 1;
+
+  await supabaseDb.updateMessageVersions({
+    messageId: target.id,
+    content: newContent,
+    versions,
+    activeVersionIndex,
+  });
+
+  console.timeEnd("regenerateAssistantMessage");
+  return {
+    ok: true,
+    message: { ...target, content: newContent, versions, activeVersionIndex },
+  };
+}

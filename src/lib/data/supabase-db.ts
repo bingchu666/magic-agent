@@ -279,6 +279,63 @@ export const supabaseDb = {
     };
   },
 
+  /** Raw write used by both "regenerate" (append) and "switch version" (replay) flows. */
+  async updateMessageVersions(payload: {
+    messageId: string;
+    content: string;
+    versions: string[];
+    activeVersionIndex: number;
+  }): Promise<void> {
+    const supabase = await sc();
+    const { error } = await supabase
+      .from("messages")
+      .update(
+        toDatabaseRow({
+          content: payload.content,
+          versions: payload.versions,
+          activeVersionIndex: payload.activeVersionIndex,
+        })
+      )
+      .eq("id", payload.messageId);
+    assertNoError(error, "Failed to update message versions");
+  },
+
+  async setActiveMessageVersion(payload: {
+    threadId: string;
+    messageId: string;
+    activeVersionIndex: number;
+  }): Promise<
+    | { ok: true; message: Message }
+    | { ok: false; reason: "NOT_FOUND" | "NOT_EDITABLE" | "OUT_OF_RANGE" }
+  > {
+    const messages = await supabaseDb.listMessages(payload.threadId);
+    const target = messages.find((item) => item.id === payload.messageId);
+    if (!target) return { ok: false, reason: "NOT_FOUND" };
+    if (target.role !== "assistant") return { ok: false, reason: "NOT_EDITABLE" };
+
+    const versions = Array.isArray(target.versions) ? target.versions : [];
+    if (
+      !Number.isInteger(payload.activeVersionIndex) ||
+      payload.activeVersionIndex < 0 ||
+      payload.activeVersionIndex >= versions.length
+    ) {
+      return { ok: false, reason: "OUT_OF_RANGE" };
+    }
+
+    const content = versions[payload.activeVersionIndex];
+    await supabaseDb.updateMessageVersions({
+      messageId: target.id,
+      content,
+      versions,
+      activeVersionIndex: payload.activeVersionIndex,
+    });
+
+    return {
+      ok: true,
+      message: { ...target, content, activeVersionIndex: payload.activeVersionIndex },
+    };
+  },
+
   // ── Videos ─────────────────────────────────────────────
 
   async listPublishedVideos(locale?: Locale): Promise<VideoAsset[]> {
