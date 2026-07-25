@@ -31,6 +31,16 @@ export function AuthScreen() {
     setLocale(browserLang.startsWith("zh") ? "zh" : "en");
   }, []);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const callbackError = params.get("error");
+    if (callbackError) {
+      setError(callbackError);
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
+
   const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setLoading(true);
@@ -54,6 +64,27 @@ export function AuthScreen() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGoogleLogin = async () => {
+    setLoading(true);
+    setError(null);
+    setMessage(null);
+
+    try {
+      const { error: oauthError } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: `${window.location.origin}/auth/callback`,
+        },
+      });
+
+      if (oauthError) throw oauthError;
+      // On success the SDK redirects the browser to Google — nothing else to do here.
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Google sign-in failed");
       setLoading(false);
     }
   };
@@ -172,6 +203,21 @@ export function AuthScreen() {
               className="w-full rounded-xl bg-black px-4 py-3 text-sm font-semibold uppercase tracking-wide text-white disabled:opacity-40"
             >
               {loading ? "..." : isZh ? "登录" : "Sign In"}
+            </button>
+
+            <div className="flex items-center gap-3 text-xs uppercase tracking-wide text-zinc-400">
+              <span className="h-px flex-1 bg-zinc-200" />
+              {isZh ? "或" : "or"}
+              <span className="h-px flex-1 bg-zinc-200" />
+            </div>
+
+            <button
+              type="button"
+              onClick={handleGoogleLogin}
+              disabled={loading}
+              className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 text-sm font-semibold uppercase tracking-wide text-zinc-900 hover:bg-zinc-50 disabled:opacity-40"
+            >
+              {loading ? "..." : isZh ? "使用 Google 登录" : "Continue with Google"}
             </button>
 
             <p className="text-center text-sm text-zinc-500">
