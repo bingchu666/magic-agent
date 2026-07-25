@@ -9,6 +9,7 @@ type OrchestratorInput = ChatStreamRequest & {
   userId: string;
   onThreadReady?: (threadId: string) => void;
   onModelToken?: (text: string) => void;
+  signal?: AbortSignal;
 };
 
 const zhNumberMap: Record<string, number> = {
@@ -173,7 +174,7 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
   };
 
   const generationPromise = input.onModelToken
-    ? generateWithGatewayStream(generationInput, input.onModelToken)
+    ? generateWithGatewayStream(generationInput, input.onModelToken, input.signal)
     : generateWithGateway(generationInput);
   const [generation, userMessage] = await Promise.all([
     generationPromise,

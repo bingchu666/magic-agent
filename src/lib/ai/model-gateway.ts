@@ -39,7 +39,7 @@ const GROUNDED_STREAM_GUARD_CHARS = Number.isFinite(configuredGroundedGuardChars
   ? Math.max(32, configuredGroundedGuardChars)
   : 96;
 const DEFAULT_MAGIC_SYSTEM_PROMPT =
-  "You are MagicAgent, a professional magic-learning and performance coach. Answer the user's latest request directly with practical, complete guidance. Be concise by default and expand when the user asks for more detail. Keep continuity across turns, and only continue a prior section when the user explicitly asks to continue. Treat the supplied conversation history as authoritative context: remember facts, preferences, names, constraints, and earlier decisions within this thread, and resolve follow-up references from that history. For any broad but answerable request, make a sensible assumption and provide useful substance before offering follow-up choices. Ask a clarifying question first only when missing information would materially change the correctness or safety of the answer. When teaching a trick, ensure the stated effect, required props, setup, secret, and performance steps are mutually consistent, and prefer established, reliable techniques over improvised or uncertain procedures. When the user names a specific published trick or source and no relevant source material is supplied, never invent or confidently attribute an exact method to that work; clearly separate uncertain general guidance from verified source details.";
+  "You are MagicAgent, a professional magic-learning and performance coach. Answer the user's latest request directly with practical, complete guidance. Be concise by default and expand when the user asks for more detail. Keep continuity across turns, and only continue a prior section when the user explicitly asks to continue. Treat the supplied conversation history as authoritative context: remember facts, preferences, names, constraints, and earlier decisions within this thread, and resolve follow-up references from that history. For any broad but answerable request, make a sensible assumption and provide useful substance before offering follow-up choices. Ask a clarifying question first only when missing information would materially change the correctness or safety of the answer. When teaching a trick, ensure the stated effect, required props, setup, secret, and performance steps are mutually consistent, and prefer established, reliable techniques over improvised or uncertain procedures. When the user names a specific published trick or source and no relevant source material is supplied, never invent or confidently attribute an exact method to that work; clearly separate uncertain general guidance from verified source details. When you need the user to choose from a small set of options (for example, their experience level, or which prop type they want to learn), do not just list the choices as plain text. Instead, after your normal explanatory text, append exactly one fenced code block in this precise format: ```options\\n{\"question\": \"<the question text>\", \"options\": [\"<option 1>\", \"<option 2>\", \"<option 3>\"]}\\n``` — a single-line JSON object with a \"question\" string and an \"options\" array of short strings. Use this only when a genuine multiple-choice question would help; never include more than one such block in a single reply, and never put more than one JSON object inside it.";
 const RETRIEVAL_POLICY_PROMPT =
   "Knowledge-source policy: retrieved database knowledge is optional supporting context, never a permission gate for answering. When relevant retrieved entries are supplied, treat them as user-authorized reference material, prioritize their concrete facts, and use them directly to answer or teach the requested subject. Do not refuse, withhold the method, or replace it with generic advice merely because a supplied entry describes a named, published, or commercial trick. If no entries are supplied, entries are irrelevant, or retrieval fails, answer normally and completely from your general knowledge. Never refuse, apologize, reduce the answer to generic advice, or mention database/search/retrieval status merely because retrieved context is absent. Do not invent citations, authorship, provenance, or source details. Do not claim that an answer came from the knowledge base unless the user explicitly asks about sources.";
 
@@ -321,6 +321,7 @@ async function callProviderStream(params: {
   input: GenerationInput;
   onToken?: (text: string) => void;
   attemptsPerModel?: number;
+  signal?: AbortSignal;
 }) {
   const attemptsPerModel = Math.max(1, params.attemptsPerModel || 1);
   const maxTokens = resolveMaxTokens(params.input);
@@ -330,23 +331,26 @@ async function callProviderStream(params: {
   console.time("callProviderStream");
   for (const model of params.models) {
     for (let attempt = 1; attempt <= attemptsPerModel; attempt += 1) {
+      let text = "";
+      let bufferedText = "";
+      let emittedToken = false;
+      let suppressDraft = false;
+      let groundedGuardPassed = !guardGroundedAnswer;
       try {
         const messages = buildMessages(params.input, {
           groundedRetry: retryGroundedRefusal,
         });
-        const stream = await params.client.chat.completions.create({
-          model,
-          messages,
-          temperature: MODEL_TEMPERATURE,
-          max_tokens: maxTokens,
-          stream: true,
-        });
+        const stream = await params.client.chat.completions.create(
+          {
+            model,
+            messages,
+            temperature: MODEL_TEMPERATURE,
+            max_tokens: maxTokens,
+            stream: true,
+          },
+          { signal: params.signal }
+        );
 
-        let text = "";
-        let bufferedText = "";
-        let emittedToken = false;
-        let suppressDraft = false;
-        let groundedGuardPassed = !guardGroundedAnswer;
         for await (const chunk of stream) {
           const delta = extractDeltaText(chunk);
           if (!delta) continue;
@@ -396,6 +400,19 @@ async function callProviderStream(params: {
           provider: params.provider,
         } satisfies GenerationResult;
       } catch (error) {
+        if (params.signal?.aborted) {
+          // The caller stopped the request — keep whatever text already
+          // streamed to the client as the final answer instead of failing
+          // or retrying with another model.
+          if (!emittedToken && bufferedText && params.onToken) {
+            params.onToken(bufferedText);
+          }
+          console.timeEnd("callProviderStream");
+          return {
+            text: cleanResponseText(text),
+            provider: params.provider,
+          } satisfies GenerationResult;
+        }
         console.warn(`${params.provider} stream generation failed`, { model, attempt, error });
       }
     }
@@ -467,6 +484,7 @@ async function callAnthropicProviderStream(params: {
   input: GenerationInput;
   onToken?: (text: string) => void;
   attemptsPerModel?: number;
+  signal?: AbortSignal;
 }): Promise<GenerationResult | null> {
   const attemptsPerModel = Math.max(1, params.attemptsPerModel || 1);
   const maxTokens = resolveMaxTokens(params.input);
@@ -476,24 +494,27 @@ async function callAnthropicProviderStream(params: {
   console.time("callAnthropicProviderStream");
   for (const model of params.models) {
     for (let attempt = 1; attempt <= attemptsPerModel; attempt += 1) {
+      let text = "";
+      let bufferedText = "";
+      let emittedToken = false;
+      let suppressDraft = false;
+      let groundedGuardPassed = !guardGroundedAnswer;
       try {
         const messages = buildMessages(params.input, {
           groundedRetry: retryGroundedRefusal,
         });
         const { system, messages: anthropicMessages } = toAnthropicMessages(messages);
-        const stream = params.client.messages.stream({
-          model,
-          system: system || undefined,
-          messages: anthropicMessages,
-          max_tokens: maxTokens,
-          temperature: MODEL_TEMPERATURE,
-        });
+        const stream = params.client.messages.stream(
+          {
+            model,
+            system: system || undefined,
+            messages: anthropicMessages,
+            max_tokens: maxTokens,
+            temperature: MODEL_TEMPERATURE,
+          },
+          { signal: params.signal }
+        );
 
-        let text = "";
-        let bufferedText = "";
-        let emittedToken = false;
-        let suppressDraft = false;
-        let groundedGuardPassed = !guardGroundedAnswer;
         for await (const event of stream) {
           const delta = extractAnthropicDeltaText(event);
           if (!delta) continue;
@@ -543,6 +564,19 @@ async function callAnthropicProviderStream(params: {
           provider: "anthropic",
         } satisfies GenerationResult;
       } catch (error) {
+        if (params.signal?.aborted) {
+          // The caller stopped the request — keep whatever text already
+          // streamed to the client as the final answer instead of failing
+          // or retrying with another model.
+          if (!emittedToken && bufferedText && params.onToken) {
+            params.onToken(bufferedText);
+          }
+          console.timeEnd("callAnthropicProviderStream");
+          return {
+            text: cleanResponseText(text),
+            provider: "anthropic",
+          } satisfies GenerationResult;
+        }
         console.warn("anthropic stream generation failed", { model, attempt, error });
       }
     }
@@ -587,7 +621,8 @@ async function callOpenAI(input: GenerationInput): Promise<GenerationResult | nu
 
 async function callDeepSeekStream(
   input: GenerationInput,
-  onToken?: (text: string) => void
+  onToken?: (text: string) => void,
+  signal?: AbortSignal
 ): Promise<GenerationResult | null> {
   if (!process.env.DEEPSEEK_API_KEY) return null;
 
@@ -603,13 +638,15 @@ async function callDeepSeekStream(
     models,
     input,
     onToken,
+    signal,
     attemptsPerModel: shouldGuardGroundedAnswer(input) ? 2 : 1,
   });
 }
 
 async function callOpenAIStream(
   input: GenerationInput,
-  onToken?: (text: string) => void
+  onToken?: (text: string) => void,
+  signal?: AbortSignal
 ): Promise<GenerationResult | null> {
   if (!process.env.OPENAI_API_KEY) return null;
 
@@ -622,6 +659,7 @@ async function callOpenAIStream(
     models,
     input,
     onToken,
+    signal,
     attemptsPerModel: shouldGuardGroundedAnswer(input) ? 2 : 1,
   });
 }
@@ -646,7 +684,8 @@ async function callAnthropic(input: GenerationInput): Promise<GenerationResult |
 
 async function callAnthropicStream(
   input: GenerationInput,
-  onToken?: (text: string) => void
+  onToken?: (text: string) => void,
+  signal?: AbortSignal
 ): Promise<GenerationResult | null> {
   const client = resolveAnthropicClient();
   if (!client) return null;
@@ -657,6 +696,7 @@ async function callAnthropicStream(
     models,
     input,
     onToken,
+    signal,
     attemptsPerModel: shouldGuardGroundedAnswer(input) ? 2 : 1,
   });
 }
@@ -681,7 +721,11 @@ function buildProviderAttempts(): Array<(input: GenerationInput) => Promise<Gene
 }
 
 function buildProviderStreamAttempts(): Array<
-  (input: GenerationInput, onToken?: (text: string) => void) => Promise<GenerationResult | null>
+  (
+    input: GenerationInput,
+    onToken?: (text: string) => void,
+    signal?: AbortSignal
+  ) => Promise<GenerationResult | null>
 > {
   switch (ACTIVE_PROVIDER) {
     case "openai":
@@ -722,13 +766,16 @@ export async function generateWithGateway(input: GenerationInput): Promise<Gener
 
 export async function generateWithGatewayStream(
   input: GenerationInput,
-  onToken?: (text: string) => void
+  onToken?: (text: string) => void,
+  signal?: AbortSignal
 ): Promise<GenerationResult> {
   for (const attempt of buildProviderStreamAttempts()) {
-    const result = await withTimeout(attempt(input, onToken), MODEL_STREAM_TIMEOUT_MS).catch((error) => {
-      console.warn(`${ACTIVE_PROVIDER} provider stream timeout/failure`, error);
-      return null;
-    });
+    const result = await withTimeout(attempt(input, onToken, signal), MODEL_STREAM_TIMEOUT_MS).catch(
+      (error) => {
+        console.warn(`${ACTIVE_PROVIDER} provider stream timeout/failure`, error);
+        return null;
+      }
+    );
     if (result) return result;
   }
 

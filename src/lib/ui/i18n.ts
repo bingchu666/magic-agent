@@ -21,6 +21,9 @@ type Copy = {
   ready: string;
   failed: string;
   expired: string;
+  copyMessage: string;
+  copiedMessage: string;
+  stopGenerating: string;
 };
 
 const dictionary: Record<Locale, Copy> = {
@@ -45,6 +48,9 @@ const dictionary: Record<Locale, Copy> = {
     ready: "已完成",
     failed: "失败",
     expired: "已过期",
+    copyMessage: "复制",
+    copiedMessage: "已复制",
+    stopGenerating: "停止生成",
   },
   en: {
     appName: "Magic Agent",
@@ -67,6 +73,9 @@ const dictionary: Record<Locale, Copy> = {
     ready: "Ready",
     failed: "Failed",
     expired: "Expired",
+    copyMessage: "Copy",
+    copiedMessage: "Copied",
+    stopGenerating: "Stop generating",
   },
 };
 

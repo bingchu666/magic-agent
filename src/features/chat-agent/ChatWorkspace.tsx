@@ -3,12 +3,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import Link from "next/link";
+import { Square } from "lucide-react";
 import { ChatHistoryMessage, FileAsset, LessonPayload, Message, Thread } from "@/lib/domain/types";
 import { createId } from "@/lib/domain/utils";
 import { useSession } from "@/features/auth/session.client";
 import { consumeSseStream } from "@/features/chat-agent/sse";
 import { MagicLessonCards } from "@/features/chat-agent/MagicLessonCards";
 import { AssistantMarkdown } from "@/features/chat-agent/AssistantMarkdown";
+import { CopyMessageButton } from "@/features/chat-agent/CopyMessageButton";
+import { QuickOptionsPrompt } from "@/features/chat-agent/QuickOptionsPrompt";
+import { extractQuickOptions } from "@/lib/agent/optionsBlock";
 import { t } from "@/lib/ui/i18n";
 
 type UiMessage = Pick<Message, "id" | "role" | "content" | "locale" | "createdAt" | "lessonPayload">;
@@ -85,6 +89,7 @@ export function ChatWorkspace() {
   const activeThreadRef = useRef<string | null>(null);
   const threadStoreRef = useRef<Record<string, ThreadRuntimeState>>({});
   const initializedRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const readyFiles = useMemo(() => files.filter((file) => file.status === "ready"), [files]);
 
@@ -312,6 +317,9 @@ export function ChatWorkspace() {
     const content = (prefill ?? input).trim();
     if (!content || sending) return;
 
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
     setSending(true);
     setError(null);
 
@@ -339,6 +347,31 @@ export function ChatWorkspace() {
 
     setInput("");
 
+    // Declared outside the try block so the catch handler can flush any
+    // still-debounced tokens before deciding what the final content is —
+    // otherwise a chunk queued in the last ~32ms before an abort/error would
+    // be silently dropped instead of preserved.
+    let pendingTokenText = "";
+    let tokenFlushTimer: number | null = null;
+    const flushPendingTokens = () => {
+      tokenFlushTimer = null;
+      const text = pendingTokenText;
+      pendingTokenText = "";
+      if (!text) return;
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.id === assistantMessageId
+            ? { ...message, content: `${message.content}${text}` }
+            : message
+        )
+      );
+    };
+    const queueToken = (text: string) => {
+      pendingTokenText += text;
+      if (tokenFlushTimer !== null) return;
+      tokenFlushTimer = window.setTimeout(flushPendingTokens, 32);
+    };
+
     try {
       let threadId = activeThreadId;
       if (!threadId) {
@@ -353,26 +386,6 @@ export function ChatWorkspace() {
       // The latest user message is sent separately as userMessage. History only
       // contains completed prior turns so the model never receives it twice.
       const historyForRequest = buildClientHistory(messages);
-      let pendingTokenText = "";
-      let tokenFlushTimer: number | null = null;
-      const flushPendingTokens = () => {
-        tokenFlushTimer = null;
-        const text = pendingTokenText;
-        pendingTokenText = "";
-        if (!text) return;
-        setMessages((prev) =>
-          prev.map((message) =>
-            message.id === assistantMessageId
-              ? { ...message, content: `${message.content}${text}` }
-              : message
-          )
-        );
-      };
-      const queueToken = (text: string) => {
-        pendingTokenText += text;
-        if (tokenFlushTimer !== null) return;
-        tokenFlushTimer = window.setTimeout(flushPendingTokens, 32);
-      };
       const res = await fetch("/api/chat/stream", {
         method: "POST",
         headers: {
@@ -385,6 +398,7 @@ export function ChatWorkspace() {
           attachmentIds: selectedAttachments,
           clientHistory: historyForRequest,
         }),
+        signal: abortController.signal,
       });
 
       if (!res.ok) {
@@ -440,25 +454,52 @@ export function ChatWorkspace() {
       if (tokenFlushTimer !== null) window.clearTimeout(tokenFlushTimer);
       flushPendingTokens();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      const fallbackText = locale === "zh" ? "请求失败，请稍后重试。" : "Request failed. Please retry.";
-      setError(msg);
+      if (tokenFlushTimer !== null) window.clearTimeout(tokenFlushTimer);
+      flushPendingTokens();
 
-      setMessages((prev) =>
-        prev.map((message) =>
-          message.id === assistantMessageId
-            ? message.content.trim().length > 0
-              ? message
-              : {
-                  ...message,
-                  content: fallbackText,
-                }
-            : message
-        )
-      );
+      const isUserAbort = (err as { name?: string } | null)?.name === "AbortError";
+
+      if (isUserAbort) {
+        // The user clicked "stop" — keep whatever was already streamed as
+        // this message's final content. No error banner for an intentional stop.
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantMessageId
+              ? message.content.trim().length > 0
+                ? message
+                : {
+                    ...message,
+                    content: locale === "zh" ? "（已停止生成）" : "(Generation stopped)",
+                  }
+              : message
+          )
+        );
+      } else {
+        const msg = err instanceof Error ? err.message : "Unknown error";
+        const fallbackText = locale === "zh" ? "请求失败，请稍后重试。" : "Request failed. Please retry.";
+        setError(msg);
+
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === assistantMessageId
+              ? message.content.trim().length > 0
+                ? message
+                : {
+                    ...message,
+                    content: fallbackText,
+                  }
+              : message
+          )
+        );
+      }
     } finally {
+      abortControllerRef.current = null;
       setSending(false);
     }
+  };
+
+  const stopGeneration = () => {
+    abortControllerRef.current?.abort();
   };
 
   const uploadFromComposer = async (list: FileList | null) => {
@@ -635,32 +676,68 @@ export function ChatWorkspace() {
             </div>
           ) : (
             <div className="space-y-5">
-              {messages.map((message) => (
-                <div key={message.id} className={clsx("flex", message.role === "user" ? "justify-end" : "justify-start")}>
-                  <div
-                    className={clsx(
-                      "max-w-[92%] break-words rounded-2xl px-4 py-3 text-[15px] leading-7",
-                      message.role === "user"
-                        ? "bg-[#202123] text-white"
-                        : "border border-zinc-200 bg-zinc-50 text-zinc-800"
-                    )}
-                  >
-                    {message.role === "assistant" && message.lessonPayload ? (
-                      <MagicLessonCards
-                        payload={message.lessonPayload}
-                        locale={locale}
-                        onQuickAsk={(prompt) => {
-                          void sendMessage(prompt);
-                        }}
-                      />
-                    ) : message.role === "assistant" ? (
-                      <AssistantMarkdown content={message.content || (sending ? "..." : "")} />
-                    ) : (
-                      <p className="whitespace-pre-wrap">{message.content || (sending ? "..." : "")}</p>
-                    )}
+              {messages.map((message) => {
+                const isAssistant = message.role === "assistant";
+                const hasCards = isAssistant && Boolean(message.lessonPayload);
+                const { cleanedContent, quickOptions } =
+                  isAssistant && !hasCards
+                    ? extractQuickOptions(message.content)
+                    : { cleanedContent: message.content, quickOptions: null };
+                const canCopy = isAssistant && cleanedContent.trim().length > 0;
+                return (
+                  <div key={message.id} className={clsx("flex", isAssistant ? "justify-start" : "justify-end")}>
+                    <div
+                      className={clsx(
+                        "flex max-w-[92%] flex-col",
+                        isAssistant ? "items-start" : "items-end"
+                      )}
+                    >
+                      <div className="group relative">
+                        <div
+                          className={clsx(
+                            "break-words rounded-2xl px-4 py-3 text-[15px] leading-7",
+                            isAssistant
+                              ? "border border-zinc-200 bg-zinc-50 text-zinc-800"
+                              : "bg-[#202123] text-white"
+                          )}
+                        >
+                          {hasCards ? (
+                            <MagicLessonCards
+                              payload={message.lessonPayload!}
+                              locale={locale}
+                              onQuickAsk={(prompt) => {
+                                void sendMessage(prompt);
+                              }}
+                            />
+                          ) : isAssistant ? (
+                            <AssistantMarkdown content={cleanedContent || (sending ? "..." : "")} />
+                          ) : (
+                            <p className="whitespace-pre-wrap">{message.content || (sending ? "..." : "")}</p>
+                          )}
+                        </div>
+                        {canCopy ? (
+                          <div className="absolute left-1 top-full z-10 mt-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
+                            <CopyMessageButton
+                              content={cleanedContent}
+                              label={copy.copyMessage}
+                              copiedLabel={copy.copiedMessage}
+                            />
+                          </div>
+                        ) : null}
+                      </div>
+                      {quickOptions ? (
+                        <QuickOptionsPrompt
+                          question={quickOptions.question}
+                          options={quickOptions.options}
+                          onSelect={(option) => {
+                            void sendMessage(option);
+                          }}
+                        />
+                      ) : null}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
               <div ref={messagesEndRef} />
             </div>
           )}
@@ -697,14 +774,26 @@ export function ChatWorkspace() {
                 >
                   {uploadingAttachments ? "..." : copy.attach}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => void sendMessage()}
-                  disabled={!input.trim() || sending}
-                  className="rounded-full bg-[#202123] px-5 py-2 text-xs font-semibold uppercase tracking-wide text-white disabled:opacity-40"
-                >
-                  {sending ? "..." : copy.send}
-                </button>
+                {sending ? (
+                  <button
+                    type="button"
+                    onClick={stopGeneration}
+                    aria-label={copy.stopGenerating}
+                    title={copy.stopGenerating}
+                    className="flex h-9 w-9 items-center justify-center rounded-full bg-[#202123] text-white hover:opacity-90"
+                  >
+                    <Square className="h-3.5 w-3.5" fill="currentColor" strokeWidth={0} />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void sendMessage()}
+                    disabled={!input.trim()}
+                    className="rounded-full bg-[#202123] px-5 py-2 text-xs font-semibold uppercase tracking-wide text-white disabled:opacity-40"
+                  >
+                    {copy.send}
+                  </button>
+                )}
               </div>
             </div>
             <input
