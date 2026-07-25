@@ -83,6 +83,8 @@ export async function POST(req: Request) {
             locale: body.locale === "en" ? "en" : "zh",
             attachmentIds: Array.isArray(body.attachmentIds) ? body.attachmentIds : [],
             clientHistory: normalizeChatHistory(body.clientHistory),
+            editedMessageId:
+              typeof body.editedMessageId === "string" ? body.editedMessageId : undefined,
             userId: session.id,
             signal: abortController.signal,
             onThreadReady: (threadId) => {
@@ -128,6 +130,7 @@ export async function POST(req: Request) {
 
           write("done", {
             messageId: result.assistantMessage.id,
+            userMessageId: result.userMessage.id,
             provider: result.output.provider,
             recommendationRefreshed: result.output.recommendationRefreshed,
             refreshReason: result.output.refreshReason,

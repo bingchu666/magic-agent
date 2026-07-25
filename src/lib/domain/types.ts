@@ -213,6 +213,10 @@ export type ChatStreamRequest = {
   locale: Locale;
   attachmentIds?: string[];
   clientHistory?: ChatHistoryMessage[];
+  // Set when this call is regenerating a reply after the user edited an
+  // already-persisted message: the user turn was already updated in place via
+  // PATCH /messages/{id}, so the orchestrator must not insert it again.
+  editedMessageId?: string;
 };
 
 export type ChatHistoryMessage = {
@@ -235,6 +239,7 @@ export type ChatSsePayloadMap = {
   thread: { threadId: string; messageId: string };
   done: {
     messageId: string;
+    userMessageId: string;
     provider: AgentOutput["provider"];
     recommendationRefreshed: boolean;
     refreshReason: AgentOutput["refreshReason"];

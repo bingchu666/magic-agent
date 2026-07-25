@@ -233,6 +233,52 @@ export const supabaseDb = {
     return message;
   },
 
+  /**
+   * Updates an already-sent user message in place and deletes every message
+   * that came after it (by created_at/id order) — used when the user edits a
+   * message and the conversation from that point on is regenerated.
+   */
+  async editMessageAndTruncate(payload: {
+    threadId: string;
+    messageId: string;
+    content: string;
+  }): Promise<
+    | { ok: true; message: Message; deletedMessageIds: string[] }
+    | { ok: false; reason: "NOT_FOUND" | "NOT_EDITABLE" }
+  > {
+    const supabase = await sc();
+    const messages = await supabaseDb.listMessages(payload.threadId);
+    const index = messages.findIndex((item) => item.id === payload.messageId);
+    if (index === -1) return { ok: false, reason: "NOT_FOUND" };
+
+    const target = messages[index];
+    if (target.role !== "user") return { ok: false, reason: "NOT_EDITABLE" };
+
+    const deletedMessageIds = messages.slice(index + 1).map((item) => item.id);
+
+    const { error: updateError } = await supabase
+      .from("messages")
+      .update(toDatabaseRow({ content: payload.content }))
+      .eq("id", target.id);
+    assertNoError(updateError, "Failed to update message");
+
+    if (deletedMessageIds.length > 0) {
+      const { error: deleteError } = await supabase
+        .from("messages")
+        .delete()
+        .in("id", deletedMessageIds);
+      assertNoError(deleteError, "Failed to delete trailing messages");
+    }
+
+    await supabaseDb.touchThread(payload.threadId);
+
+    return {
+      ok: true,
+      message: { ...target, content: payload.content },
+      deletedMessageIds,
+    };
+  },
+
   // ── Videos ─────────────────────────────────────────────
 
   async listPublishedVideos(locale?: Locale): Promise<VideoAsset[]> {

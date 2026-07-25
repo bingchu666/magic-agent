@@ -4,6 +4,7 @@ import { detectIntent } from "@/lib/agent/intent";
 import { supabaseDb } from "@/lib/data/supabase-db";
 import { AgentOutput, ChatHistoryMessage, ChatStreamRequest, Locale, Message } from "@/lib/domain/types";
 import { normalizeChatHistory, removeDuplicateCurrentUserTurn } from "@/lib/agent/history";
+import { nowIso } from "@/lib/domain/utils";
 
 type OrchestratorInput = ChatStreamRequest & {
   userId: string;
@@ -146,15 +147,28 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
   const previousAssistantReply = extractLatestAssistantFromHistory(history) || undefined;
 
   // Persist the user turn while generation starts so this required write does
-  // not add latency before the first streamed token.
-  const userMessagePromise = supabaseDb.createMessage({
-    threadId: thread.id,
-    userId: input.userId,
-    role: "user",
-    content: input.userMessage,
-    locale: requestedLocale,
-    attachmentIds: input.attachmentIds,
-  });
+  // not add latency before the first streamed token. When regenerating after
+  // an edit, the user turn was already updated in place via the messages PATCH
+  // endpoint — inserting it again here would create a duplicate row.
+  const userMessagePromise = input.editedMessageId
+    ? Promise.resolve({
+        id: input.editedMessageId,
+        threadId: thread.id,
+        userId: input.userId,
+        role: "user" as const,
+        content: input.userMessage,
+        locale: requestedLocale,
+        attachmentIds: input.attachmentIds,
+        createdAt: nowIso(),
+      } satisfies Message)
+    : supabaseDb.createMessage({
+        threadId: thread.id,
+        userId: input.userId,
+        role: "user",
+        content: input.userMessage,
+        locale: requestedLocale,
+        attachmentIds: input.attachmentIds,
+      });
 
   const requestedPoint = parseRequestedPoint(input.userMessage);
   const continuationTarget = extractPointSegment(previousAssistantReply, requestedPoint);

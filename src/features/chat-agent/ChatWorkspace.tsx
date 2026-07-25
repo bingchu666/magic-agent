@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import Link from "next/link";
-import { Square } from "lucide-react";
+import { Pencil, Square } from "lucide-react";
 import { ChatHistoryMessage, FileAsset, LessonPayload, Message, Thread } from "@/lib/domain/types";
 import { createId } from "@/lib/domain/utils";
 import { useSession } from "@/features/auth/session.client";
@@ -83,6 +83,9 @@ export function ChatWorkspace() {
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [deletingThreadId, setDeletingThreadId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingDraft, setEditingDraft] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -313,7 +316,19 @@ export function ChatWorkspace() {
     return "Uploaded";
   };
 
-  const sendMessage = async (prefill?: string) => {
+  const sendMessage = async (
+    prefill?: string,
+    options?: {
+      // Regenerating after an edit: the user turn already exists in state/DB
+      // (in place, same id), so don't append a second copy of it.
+      skipUserMessage?: boolean;
+      // Overrides `messages` for history-building. Needed when the caller
+      // just truncated/edited `messages` in this same tick — React state
+      // updates aren't visible yet via the closed-over `messages` variable.
+      historyMessages?: UiMessage[];
+      editedMessageId?: string;
+    }
+  ) => {
     const content = (prefill ?? input).trim();
     if (!content || sending) return;
 
@@ -335,7 +350,7 @@ export function ChatWorkspace() {
 
     setMessages((prev) => [
       ...prev,
-      userMessage,
+      ...(options?.skipUserMessage ? [] : [userMessage]),
       {
         id: assistantMessageId,
         role: "assistant",
@@ -345,7 +360,7 @@ export function ChatWorkspace() {
       },
     ]);
 
-    setInput("");
+    if (!options?.skipUserMessage) setInput("");
 
     // Declared outside the try block so the catch handler can flush any
     // still-debounced tokens before deciding what the final content is —
@@ -385,7 +400,7 @@ export function ChatWorkspace() {
 
       // The latest user message is sent separately as userMessage. History only
       // contains completed prior turns so the model never receives it twice.
-      const historyForRequest = buildClientHistory(messages);
+      const historyForRequest = buildClientHistory(options?.historyMessages ?? messages);
       const res = await fetch("/api/chat/stream", {
         method: "POST",
         headers: {
@@ -397,6 +412,7 @@ export function ChatWorkspace() {
           locale,
           attachmentIds: selectedAttachments,
           clientHistory: historyForRequest,
+          editedMessageId: options?.editedMessageId,
         }),
         signal: abortController.signal,
       });
@@ -441,9 +457,19 @@ export function ChatWorkspace() {
           );
         },
         video_recommendations: () => {},
-        done: () => {
+        done: (payload) => {
           if (tokenFlushTimer !== null) window.clearTimeout(tokenFlushTimer);
           flushPendingTokens();
+          // Swap the optimistic local ids for the real server-assigned ones so
+          // later actions (like editing this message) can address it by an id
+          // the backend actually recognizes, without waiting for a reload.
+          setMessages((prev) =>
+            prev.map((message) => {
+              if (message.id === userMessage.id) return { ...message, id: payload.userMessageId };
+              if (message.id === assistantMessageId) return { ...message, id: payload.messageId };
+              return message;
+            })
+          );
         },
         error: (payload) => {
           if (tokenFlushTimer !== null) window.clearTimeout(tokenFlushTimer);
@@ -500,6 +526,77 @@ export function ChatWorkspace() {
 
   const stopGeneration = () => {
     abortControllerRef.current?.abort();
+  };
+
+  const startEditingMessage = (message: UiMessage) => {
+    if (sending) return;
+    setEditingMessageId(message.id);
+    setEditingDraft(message.content);
+  };
+
+  const cancelEditingMessage = () => {
+    setEditingMessageId(null);
+    setEditingDraft("");
+  };
+
+  const confirmEditMessage = async () => {
+    const targetId = editingMessageId;
+    const nextContent = editingDraft.trim();
+    if (!targetId || !nextContent || savingEdit) return;
+
+    const index = messages.findIndex((item) => item.id === targetId);
+    if (index === -1) {
+      cancelEditingMessage();
+      return;
+    }
+
+    // No actual change — just leave edit mode instead of truncating and
+    // regenerating for nothing.
+    if (nextContent === messages[index].content.trim()) {
+      cancelEditingMessage();
+      return;
+    }
+
+    const confirmed = window.confirm(
+      locale === "zh"
+        ? "修改后，此消息之后的回复将被删除并重新生成，是否继续？"
+        : "Editing this message will delete everything after it and regenerate the reply. Continue?"
+    );
+    if (!confirmed) return;
+
+    const threadId = activeThreadId;
+    if (!threadId) {
+      cancelEditingMessage();
+      return;
+    }
+
+    setSavingEdit(true);
+    setError(null);
+
+    try {
+      await apiJson(`/api/threads/${threadId}/messages/${targetId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: nextContent }),
+      });
+
+      const historyMessages = messages.slice(0, index);
+      const editedMessage: UiMessage = { ...messages[index], content: nextContent };
+      const truncatedMessages = [...historyMessages, editedMessage];
+
+      setMessages(truncatedMessages);
+      cancelEditingMessage();
+
+      await sendMessage(nextContent, {
+        skipUserMessage: true,
+        historyMessages,
+        editedMessageId: targetId,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to edit message");
+    } finally {
+      setSavingEdit(false);
+    }
   };
 
   const uploadFromComposer = async (list: FileList | null) => {
@@ -684,6 +781,8 @@ export function ChatWorkspace() {
                     ? extractQuickOptions(message.content)
                     : { cleanedContent: message.content, quickOptions: null };
                 const canCopy = isAssistant && cleanedContent.trim().length > 0;
+                const isEditing = !isAssistant && editingMessageId === message.id;
+                const canEdit = !isAssistant && !editingMessageId;
                 return (
                   <div key={message.id} className={clsx("flex", isAssistant ? "justify-start" : "justify-end")}>
                     <div
@@ -698,10 +797,46 @@ export function ChatWorkspace() {
                             "break-words rounded-2xl px-4 py-3 text-[15px] leading-7",
                             isAssistant
                               ? "border border-zinc-200 bg-zinc-50 text-zinc-800"
-                              : "bg-[#202123] text-white"
+                              : "bg-[#202123] text-white",
+                            isEditing && "w-full min-w-[260px]"
                           )}
                         >
-                          {hasCards ? (
+                          {isEditing ? (
+                            <div className="flex flex-col gap-2">
+                              <textarea
+                                value={editingDraft}
+                                onChange={(event) => setEditingDraft(event.target.value)}
+                                rows={Math.min(8, Math.max(2, editingDraft.split("\n").length))}
+                                autoFocus
+                                className="w-full resize-none rounded-lg border border-white/30 bg-white/10 px-2 py-1.5 text-[15px] leading-7 text-white outline-none focus:border-white/60"
+                                onKeyDown={(event) => {
+                                  if (event.nativeEvent.isComposing) return;
+                                  if (event.key === "Escape") {
+                                    event.preventDefault();
+                                    cancelEditingMessage();
+                                  }
+                                }}
+                              />
+                              <div className="flex items-center justify-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={cancelEditingMessage}
+                                  disabled={savingEdit}
+                                  className="rounded-full bg-white/15 px-3 py-1 text-xs font-semibold text-white hover:bg-white/25 disabled:opacity-50"
+                                >
+                                  {copy.cancelEdit}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void confirmEditMessage()}
+                                  disabled={savingEdit || !editingDraft.trim()}
+                                  className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-[#202123] hover:bg-zinc-100 disabled:opacity-50"
+                                >
+                                  {savingEdit ? "..." : copy.confirmEdit}
+                                </button>
+                              </div>
+                            </div>
+                          ) : hasCards ? (
                             <MagicLessonCards
                               payload={message.lessonPayload!}
                               locale={locale}
@@ -722,6 +857,19 @@ export function ChatWorkspace() {
                               label={copy.copyMessage}
                               copiedLabel={copy.copiedMessage}
                             />
+                          </div>
+                        ) : null}
+                        {canEdit ? (
+                          <div className="absolute right-1 top-full z-10 mt-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
+                            <button
+                              type="button"
+                              onClick={() => startEditingMessage(message)}
+                              aria-label={copy.editMessage}
+                              title={copy.editMessage}
+                              className="inline-flex items-center justify-center rounded-md p-1 text-zinc-400 transition hover:bg-zinc-200 hover:text-zinc-700"
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
                           </div>
                         ) : null}
                       </div>

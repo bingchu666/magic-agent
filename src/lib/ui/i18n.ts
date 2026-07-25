@@ -24,6 +24,9 @@ type Copy = {
   copyMessage: string;
   copiedMessage: string;
   stopGenerating: string;
+  editMessage: string;
+  confirmEdit: string;
+  cancelEdit: string;
 };
 
 const dictionary: Record<Locale, Copy> = {
@@ -51,6 +54,9 @@ const dictionary: Record<Locale, Copy> = {
     copyMessage: "复制",
     copiedMessage: "已复制",
     stopGenerating: "停止生成",
+    editMessage: "编辑",
+    confirmEdit: "确认",
+    cancelEdit: "取消",
   },
   en: {
     appName: "Magic Agent",
@@ -76,6 +82,9 @@ const dictionary: Record<Locale, Copy> = {
     copyMessage: "Copy",
     copiedMessage: "Copied",
     stopGenerating: "Stop generating",
+    editMessage: "Edit",
+    confirmEdit: "Confirm",
+    cancelEdit: "Cancel",
   },
 };
 
