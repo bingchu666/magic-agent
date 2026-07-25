@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import Anthropic from "@anthropic-ai/sdk";
 import { ChatHistoryMessage, ChatIntent, Locale } from "@/lib/domain/types";
 import { normalizeChatHistory } from "@/lib/agent/history";
 
@@ -15,8 +16,10 @@ export type GenerationInput = {
 
 export type GenerationResult = {
   text: string;
-  provider: "deepseek" | "openai" | "rule";
+  provider: "deepseek" | "openai" | "anthropic" | "rule";
 };
+
+type Provider = "deepseek" | "openai" | "anthropic";
 
 const MODEL_TIMEOUT_MS = Number(process.env.MODEL_TIMEOUT_MS || 25000);
 const MODEL_STREAM_TIMEOUT_MS = Number(process.env.MODEL_STREAM_TIMEOUT_MS || 180000);
@@ -26,6 +29,11 @@ const HISTORY_CLIP_CHARS = Number(process.env.MODEL_HISTORY_CHARS || 8000);
 const HISTORY_MAX_TURNS = Number(process.env.MODEL_HISTORY_TURNS || 16);
 const HISTORY_TURN_MAX_CHARS = Number(process.env.MODEL_HISTORY_TURN_CHARS || 1600);
 const ENABLE_OPENAI_FALLBACK = process.env.OPENAI_FALLBACK_ENABLED === "true";
+const VALID_PROVIDERS: Provider[] = ["deepseek", "openai", "anthropic"];
+const configuredProvider = (process.env.MAGIC_AGENT_PROVIDER || "").trim().toLowerCase();
+const ACTIVE_PROVIDER: Provider = VALID_PROVIDERS.includes(configuredProvider as Provider)
+  ? (configuredProvider as Provider)
+  : "deepseek";
 const configuredGroundedGuardChars = Number(process.env.GROUNDED_STREAM_GUARD_CHARS);
 const GROUNDED_STREAM_GUARD_CHARS = Number.isFinite(configuredGroundedGuardChars)
   ? Math.max(32, configuredGroundedGuardChars)
@@ -184,6 +192,30 @@ export function buildMessages(
   return messages;
 }
 
+/**
+ * Anthropic takes the system prompt as its own top-level `system` param and
+ * requires the `messages` array to start with a "user" turn — unlike the
+ * OpenAI-compatible shape where system/user/assistant all live in one array.
+ */
+function toAnthropicMessages(
+  messages: Array<{ role: "system" | "user" | "assistant"; content: string }>
+): { system: string; messages: Anthropic.MessageParam[] } {
+  const system = messages
+    .filter((message) => message.role === "system")
+    .map((message) => message.content)
+    .join("\n\n");
+
+  const conversation = messages.filter(
+    (message): message is { role: "user" | "assistant"; content: string } =>
+      message.role !== "system"
+  );
+
+  const firstUserIndex = conversation.findIndex((message) => message.role === "user");
+  const anthropicMessages = firstUserIndex > 0 ? conversation.slice(firstUserIndex) : conversation;
+
+  return { system, messages: anthropicMessages };
+}
+
 function resolveMaxTokens(input: GenerationInput) {
   if (/(一句|简单|简短|very short|one line|brief|quick|concise)/i.test(input.userMessage || "")) {
     return Math.max(160, Math.floor(MODEL_MAX_TOKENS * 0.35));
@@ -272,6 +304,13 @@ function extractDeltaText(chunk: unknown): string {
       })
       .join("");
   }
+  return "";
+}
+
+function extractAnthropicDeltaText(event: Anthropic.MessageStreamEvent): string {
+  if (event.type !== "content_block_delta") return "";
+  const delta = event.delta;
+  if (delta.type === "text_delta") return delta.text;
   return "";
 }
 
@@ -366,6 +405,153 @@ async function callProviderStream(params: {
   return null;
 }
 
+async function callAnthropicProvider(params: {
+  client: Anthropic;
+  models: string[];
+  input: GenerationInput;
+  attemptsPerModel?: number;
+}): Promise<GenerationResult | null> {
+  const attemptsPerModel = Math.max(1, params.attemptsPerModel || 1);
+  const maxTokens = resolveMaxTokens(params.input);
+  let retryGroundedRefusal = false;
+
+  console.time("callAnthropicProvider");
+  for (const model of params.models) {
+    for (let attempt = 1; attempt <= attemptsPerModel; attempt += 1) {
+      try {
+        const messages = buildMessages(params.input, {
+          groundedRetry: retryGroundedRefusal,
+        });
+        const { system, messages: anthropicMessages } = toAnthropicMessages(messages);
+        const completion = await params.client.messages.create({
+          model,
+          system: system || undefined,
+          messages: anthropicMessages,
+          max_tokens: maxTokens,
+          temperature: MODEL_TEMPERATURE,
+        });
+        const content = cleanResponseText(
+          completion.content
+            .filter((block): block is Anthropic.TextBlock => block.type === "text")
+            .map((block) => block.text)
+            .join("")
+            .trim()
+        );
+        if (!content) continue;
+        if (isGroundedMethodRefusal(params.input, content)) {
+          retryGroundedRefusal = true;
+          console.warn("Grounded model refusal detected; retrying", {
+            provider: "anthropic",
+            model,
+            attempt,
+          });
+          continue;
+        }
+        console.timeEnd("callAnthropicProvider");
+        return {
+          text: content,
+          provider: "anthropic",
+        } satisfies GenerationResult;
+      } catch (error) {
+        console.warn("anthropic generation failed", { model, attempt, error });
+      }
+    }
+  }
+  console.timeEnd("callAnthropicProvider");
+  return null;
+}
+
+async function callAnthropicProviderStream(params: {
+  client: Anthropic;
+  models: string[];
+  input: GenerationInput;
+  onToken?: (text: string) => void;
+  attemptsPerModel?: number;
+}): Promise<GenerationResult | null> {
+  const attemptsPerModel = Math.max(1, params.attemptsPerModel || 1);
+  const maxTokens = resolveMaxTokens(params.input);
+  const guardGroundedAnswer = shouldGuardGroundedAnswer(params.input);
+  let retryGroundedRefusal = false;
+
+  console.time("callAnthropicProviderStream");
+  for (const model of params.models) {
+    for (let attempt = 1; attempt <= attemptsPerModel; attempt += 1) {
+      try {
+        const messages = buildMessages(params.input, {
+          groundedRetry: retryGroundedRefusal,
+        });
+        const { system, messages: anthropicMessages } = toAnthropicMessages(messages);
+        const stream = params.client.messages.stream({
+          model,
+          system: system || undefined,
+          messages: anthropicMessages,
+          max_tokens: maxTokens,
+          temperature: MODEL_TEMPERATURE,
+        });
+
+        let text = "";
+        let bufferedText = "";
+        let emittedToken = false;
+        let suppressDraft = false;
+        let groundedGuardPassed = !guardGroundedAnswer;
+        for await (const event of stream) {
+          const delta = extractAnthropicDeltaText(event);
+          if (!delta) continue;
+          text += delta;
+
+          if (groundedGuardPassed) {
+            if (params.onToken) params.onToken(delta);
+            emittedToken = true;
+            continue;
+          }
+
+          if (suppressDraft) continue;
+          bufferedText += delta;
+          if (isGroundedMethodRefusal(params.input, bufferedText)) {
+            suppressDraft = true;
+            bufferedText = "";
+            // Stop consuming the rejected draft immediately. Waiting for the
+            // provider to finish it before retrying can double response time.
+            break;
+          }
+          if (bufferedText.length >= GROUNDED_STREAM_GUARD_CHARS) {
+            if (params.onToken) params.onToken(bufferedText);
+            emittedToken = true;
+            bufferedText = "";
+            groundedGuardPassed = true;
+          }
+        }
+
+        const normalized = cleanResponseText(text);
+        if (!normalized) continue;
+        if (isGroundedMethodRefusal(params.input, normalized)) {
+          retryGroundedRefusal = true;
+          console.warn("Grounded model stream refusal detected; retrying", {
+            provider: "anthropic",
+            model,
+            attempt,
+            draftWasShown: emittedToken,
+          });
+          if (!emittedToken) continue;
+        }
+        if (!emittedToken && bufferedText && params.onToken) {
+          params.onToken(bufferedText);
+        }
+        console.timeEnd("callAnthropicProviderStream");
+        return {
+          text: normalized,
+          provider: "anthropic",
+        } satisfies GenerationResult;
+      } catch (error) {
+        console.warn("anthropic stream generation failed", { model, attempt, error });
+      }
+    }
+  }
+
+  console.timeEnd("callAnthropicProviderStream");
+  return null;
+}
+
 async function callDeepSeek(input: GenerationInput): Promise<GenerationResult | null> {
   if (!process.env.DEEPSEEK_API_KEY) return null;
 
@@ -385,7 +571,7 @@ async function callDeepSeek(input: GenerationInput): Promise<GenerationResult | 
 }
 
 async function callOpenAI(input: GenerationInput): Promise<GenerationResult | null> {
-  if (!ENABLE_OPENAI_FALLBACK || !process.env.OPENAI_API_KEY) return null;
+  if (!process.env.OPENAI_API_KEY) return null;
 
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const models = parseModels(process.env.OPENAI_MODEL, ["gpt-4o-mini", "gpt-4.1-mini"]);
@@ -425,7 +611,7 @@ async function callOpenAIStream(
   input: GenerationInput,
   onToken?: (text: string) => void
 ): Promise<GenerationResult | null> {
-  if (!ENABLE_OPENAI_FALLBACK || !process.env.OPENAI_API_KEY) return null;
+  if (!process.env.OPENAI_API_KEY) return null;
 
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const models = parseModels(process.env.OPENAI_MODEL, ["gpt-4o-mini", "gpt-4.1-mini"]);
@@ -440,18 +626,82 @@ async function callOpenAIStream(
   });
 }
 
-export async function generateWithGateway(input: GenerationInput): Promise<GenerationResult> {
-  const deepSeek = await withTimeout(callDeepSeek(input)).catch((error) => {
-    console.warn("deepseek timeout/failure", error);
-    return null;
-  });
-  if (deepSeek) return deepSeek;
+function resolveAnthropicClient() {
+  if (!process.env.ANTHROPIC_API_KEY) return null;
+  return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+}
 
-  const openai = await withTimeout(callOpenAI(input)).catch((error) => {
-    console.warn("openai timeout/failure", error);
-    return null;
+async function callAnthropic(input: GenerationInput): Promise<GenerationResult | null> {
+  const client = resolveAnthropicClient();
+  if (!client) return null;
+
+  const models = parseModels(process.env.ANTHROPIC_MODEL, ["claude-sonnet-4-6"]);
+  return callAnthropicProvider({
+    client,
+    models,
+    input,
+    attemptsPerModel: shouldGuardGroundedAnswer(input) ? 2 : 1,
   });
-  if (openai) return openai;
+}
+
+async function callAnthropicStream(
+  input: GenerationInput,
+  onToken?: (text: string) => void
+): Promise<GenerationResult | null> {
+  const client = resolveAnthropicClient();
+  if (!client) return null;
+
+  const models = parseModels(process.env.ANTHROPIC_MODEL, ["claude-sonnet-4-6"]);
+  return callAnthropicProviderStream({
+    client,
+    models,
+    input,
+    onToken,
+    attemptsPerModel: shouldGuardGroundedAnswer(input) ? 2 : 1,
+  });
+}
+
+/**
+ * MAGIC_AGENT_PROVIDER selects which provider is actually used at runtime, so
+ * switching providers is a single env var change with no code changes. The
+ * default ("deepseek") preserves the pre-existing deepseek -> optional openai
+ * fallback chain; selecting "openai" or "anthropic" makes that provider the
+ * sole active one.
+ */
+function buildProviderAttempts(): Array<(input: GenerationInput) => Promise<GenerationResult | null>> {
+  switch (ACTIVE_PROVIDER) {
+    case "openai":
+      return [callOpenAI];
+    case "anthropic":
+      return [callAnthropic];
+    case "deepseek":
+    default:
+      return ENABLE_OPENAI_FALLBACK ? [callDeepSeek, callOpenAI] : [callDeepSeek];
+  }
+}
+
+function buildProviderStreamAttempts(): Array<
+  (input: GenerationInput, onToken?: (text: string) => void) => Promise<GenerationResult | null>
+> {
+  switch (ACTIVE_PROVIDER) {
+    case "openai":
+      return [callOpenAIStream];
+    case "anthropic":
+      return [callAnthropicStream];
+    case "deepseek":
+    default:
+      return ENABLE_OPENAI_FALLBACK ? [callDeepSeekStream, callOpenAIStream] : [callDeepSeekStream];
+  }
+}
+
+export async function generateWithGateway(input: GenerationInput): Promise<GenerationResult> {
+  for (const attempt of buildProviderAttempts()) {
+    const result = await withTimeout(attempt(input)).catch((error) => {
+      console.warn(`${ACTIVE_PROVIDER} provider timeout/failure`, error);
+      return null;
+    });
+    if (result) return result;
+  }
 
   const grounded = groundedFallback(input);
   if (grounded) {
@@ -474,17 +724,13 @@ export async function generateWithGatewayStream(
   input: GenerationInput,
   onToken?: (text: string) => void
 ): Promise<GenerationResult> {
-  const deepSeek = await withTimeout(callDeepSeekStream(input, onToken), MODEL_STREAM_TIMEOUT_MS).catch((error) => {
-    console.warn("deepseek stream timeout/failure", error);
-    return null;
-  });
-  if (deepSeek) return deepSeek;
-
-  const openai = await withTimeout(callOpenAIStream(input, onToken), MODEL_STREAM_TIMEOUT_MS).catch((error) => {
-    console.warn("openai stream timeout/failure", error);
-    return null;
-  });
-  if (openai) return openai;
+  for (const attempt of buildProviderStreamAttempts()) {
+    const result = await withTimeout(attempt(input, onToken), MODEL_STREAM_TIMEOUT_MS).catch((error) => {
+      console.warn(`${ACTIVE_PROVIDER} provider stream timeout/failure`, error);
+      return null;
+    });
+    if (result) return result;
+  }
 
   const grounded = groundedFallback(input);
   if (grounded) {

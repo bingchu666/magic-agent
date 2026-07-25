@@ -204,7 +204,7 @@ export type AgentOutput = {
   goalTopic: string | null;
   usedFileInsights: FileInsight[];
   safety: SafetyResult;
-  provider: "deepseek" | "openai" | "rule";
+  provider: "deepseek" | "openai" | "anthropic" | "rule";
 };
 
 export type ChatStreamRequest = {
