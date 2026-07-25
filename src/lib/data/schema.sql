@@ -122,6 +122,15 @@ CREATE TABLE events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Post-signup onboarding questionnaire (answers, skip/close state).
+CREATE TABLE public.user_onboarding (
+  user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE RESTRICT,
+  answers JSONB NOT NULL DEFAULT '{}'::jsonb,
+  completed_at TIMESTAMPTZ,
+  skip_count INT NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE thread_learning_state (
   thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE RESTRICT,
   goal_topic TEXT,
@@ -246,6 +255,7 @@ ALTER TABLE file_jobs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE file_insights ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_onboarding ENABLE ROW LEVEL SECURITY;
 ALTER TABLE thread_learning_state ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tricks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE trick_chunks ENABLE ROW LEVEL SECURITY;
@@ -312,6 +322,10 @@ CREATE POLICY "Admins read all audit logs" ON audit_logs FOR SELECT USING (publi
 CREATE POLICY "Admins insert audit logs" ON audit_logs FOR INSERT WITH CHECK (
   public.is_admin() AND auth.uid() = user_id
 );
+
+-- User onboarding
+CREATE POLICY "Users manage own onboarding" ON public.user_onboarding FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Admins read all onboarding" ON public.user_onboarding FOR SELECT USING (public.is_admin());
 
 -- Thread learning state
 CREATE POLICY "Users manage own learning state" ON thread_learning_state FOR ALL USING (

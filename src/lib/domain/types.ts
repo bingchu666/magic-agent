@@ -26,6 +26,14 @@ export type ThreadLearningState = {
   updatedAt: string;
 };
 
+export type UserOnboarding = {
+  userId: string;
+  answers: Record<string, string | string[]>;
+  completedAt: string | null;
+  skipCount: number;
+  updatedAt: string;
+};
+
 export type MessageRole = "user" | "assistant" | "system";
 
 export type LessonCard = {

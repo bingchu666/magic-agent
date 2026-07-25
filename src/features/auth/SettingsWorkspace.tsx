@@ -3,10 +3,12 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "@/features/auth/session.client";
+import { useOnboarding } from "@/features/onboarding/OnboardingProvider";
 import { t } from "@/lib/ui/i18n";
 
 export function SettingsWorkspace() {
   const { user, setLocale, signOut } = useSession();
+  const { ready: onboardingReady, openManually: openOnboarding } = useOnboarding();
   const router = useRouter();
   const locale = user?.locale ?? "zh";
   const copy = t(locale);
@@ -61,6 +63,25 @@ export function SettingsWorkspace() {
             English
           </button>
         </div>
+      </div>
+
+      <div className="rounded-3xl border border-black/10 bg-white/85 p-4 shadow-sm backdrop-blur">
+        <p className="text-sm font-semibold text-zinc-900">
+          {locale === "zh" ? "新手问卷" : "Onboarding Survey"}
+        </p>
+        <p className="mt-1 text-xs text-zinc-500">
+          {locale === "zh"
+            ? "补充或修改你的魔术学习偏好，帮助我们更好地为你推荐内容。"
+            : "Fill in or update your magic learning preferences to help us recommend better content."}
+        </p>
+        <button
+          type="button"
+          onClick={openOnboarding}
+          disabled={!onboardingReady}
+          className="mt-3 rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm font-semibold text-zinc-700 hover:bg-zinc-50 transition disabled:opacity-40"
+        >
+          {locale === "zh" ? "打开问卷" : "Open survey"}
+        </button>
       </div>
 
       <div className="rounded-3xl border border-black/10 bg-white/85 p-4 shadow-sm backdrop-blur">
