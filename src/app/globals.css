@@ -2167,17 +2167,16 @@ a {
 
 .magic-mini-tree-canvas {
   position: relative;
-  width: 240px;
-  max-width: 100%;
-  height: 176px;
+  width: 100%;
+  max-width: 240px;
   margin: 0 auto;
 }
 
 .magic-mini-tree-canvas svg {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
   width: 100%;
-  height: 100%;
   overflow: visible;
 }
 
@@ -5276,6 +5275,7 @@ a {
 
 .knowledge-stage-stack {
   position: relative;
+  z-index: 10;
   width: min(1240px, 100%);
   height: 100%;
   margin: 0 auto;
@@ -5425,8 +5425,12 @@ a {
 
 .knowledge-stage-child-card.is-expanded {
   top: 10px;
-  right: -10px;
-  width: calc(100% - 10px);
+  /* Reaches past .knowledge-stage-stack's own right edge by the same
+     226px .knowledge-stage-main reserves for .knowledge-stage-navigator,
+     so the expanded card fully covers the background tree instead of
+     leaving it peeking out on the right. */
+  right: -226px;
+  width: calc(100% + 206px);
   height: calc(100% - 10px);
   min-height: 0;
   border-radius: 30px;
@@ -6019,85 +6023,90 @@ a {
   text-align: center;
 }
 
+/* A persistent decoration drawn straight on the page background — no
+   panel shell. It sits below the cards (z-index) so an expanded card
+   naturally covers it; see .knowledge-stage-child-card.is-expanded. */
 .knowledge-stage-navigator {
   position: absolute;
-  z-index: 22;
-  top: 50%;
+  z-index: 2;
+  top: 54px;
   right: 0;
+  bottom: 118px;
   width: 210px;
-  padding: 12px 12px 9px;
-  border: 1px solid rgba(255, 255, 255, 0.7);
-  border-right: 0;
-  border-radius: 24px 0 0 24px;
-  background: rgba(255, 255, 255, 0.47);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    -12px 16px 45px rgba(43, 65, 52, 0.08);
-  opacity: 0.2;
-  backdrop-filter: blur(24px) saturate(150%);
-  -webkit-backdrop-filter: blur(24px) saturate(150%);
-  transform: translate3d(174px, -50%, 0);
-  transition:
-    transform 500ms cubic-bezier(0.16, 1, 0.3, 1) 180ms,
-    opacity 280ms ease 180ms,
-    box-shadow 280ms ease;
-}
-
-.knowledge-stage-navigator::before {
-  position: absolute;
-  top: 50%;
-  left: -12px;
-  width: 22px;
-  height: 62px;
-  border: 1px solid rgba(255, 255, 255, 0.84);
-  border-radius: 999px;
-  background:
-    radial-gradient(circle at 50% 50%, #3b8268 0 3px, transparent 4px),
-    rgba(255, 255, 255, 0.62);
-  box-shadow: 0 8px 25px rgba(41, 67, 52, 0.12);
-  content: "";
-  transform: translateY(-50%);
-}
-
-.knowledge-stage-navigator:hover,
-.knowledge-stage-navigator:focus-within {
-  opacity: 1;
-  box-shadow:
-    inset 0 1px 0 #ffffff,
-    -20px 22px 60px rgba(43, 65, 52, 0.13);
-  transform: translate3d(0, -50%, 0);
-  transition-delay: 0ms;
+  padding: 8px 6px;
+  pointer-events: none;
 }
 
 .knowledge-stage-navigator .magic-mini-tree {
+  display: flex;
+  min-height: 0;
+  height: 100%;
+  flex-direction: column;
   border: 0;
   background: transparent;
+  box-shadow: none;
+  pointer-events: auto;
 }
 
 .knowledge-stage-navigator .magic-mini-tree-label {
   color: var(--stage-muted);
 }
 
-.knowledge-stage-navigator .magic-mini-tree-node > span {
-  background: rgba(255, 255, 255, 0.88);
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.54);
+.knowledge-stage-navigator .magic-mini-tree-canvas {
+  flex: 1;
+  min-height: 0;
+  max-width: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.knowledge-stage-navigator .magic-mini-tree-canvas path,
+.knowledge-stage-navigator .magic-mini-tree-canvas path.relation-child,
+.knowledge-stage-navigator .magic-mini-tree-canvas path.relation-related,
+.knowledge-stage-navigator .magic-mini-tree-canvas path.relation-branch {
+  stroke: rgba(47, 111, 89, 0.32);
+  stroke-width: 1.4;
+}
+
+.knowledge-stage-navigator .magic-mini-tree-canvas path.is-active-path {
+  stroke: rgba(47, 111, 89, 0.68);
+  stroke-width: 2;
+  filter: none;
+}
+
+.knowledge-stage-navigator .magic-mini-tree-node > span,
+.knowledge-stage-navigator .magic-mini-tree-node.relation-root > span,
+.knowledge-stage-navigator .magic-mini-tree-node.relation-child > span,
+.knowledge-stage-navigator .magic-mini-tree-node.relation-related > span,
+.knowledge-stage-navigator .magic-mini-tree-node.relation-branch > span {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid rgba(47, 111, 89, 0.55);
+  background: transparent;
+  box-shadow: none;
 }
 
 .knowledge-stage-navigator .magic-mini-tree-node.is-active-path:not(.is-active) > span {
-  border-color: var(--stage-accent);
-  background: #e7f2ec;
+  border-color: rgba(47, 111, 89, 0.85);
 }
 
 .knowledge-stage-navigator .magic-mini-tree-node.is-active > span {
-  border-color: var(--stage-ink);
+  width: 20px;
+  height: 20px;
+  border: 0;
   background: var(--stage-ink);
   box-shadow:
-    0 0 0 4px rgba(255, 255, 255, 0.94),
-    0 0 0 5px rgba(24, 32, 27, 0.16);
+    0 0 0 3px rgba(255, 255, 255, 0.75),
+    0 0 18px 4px rgba(47, 111, 89, 0.55),
+    0 0 36px 11px rgba(47, 111, 89, 0.28);
+}
+
+.knowledge-stage-navigator .magic-mini-tree-node.is-active::before {
+  display: none;
 }
 
 .knowledge-stage-navigator > p {
-  margin: -7px 0 3px;
+  margin: 6px 0 0;
   color: var(--stage-muted);
   font-size: 8px;
   letter-spacing: 0.04em;
@@ -6424,23 +6433,22 @@ a {
 
 @media (max-width: 1100px) {
   .knowledge-stage-main {
-    padding-right: 48px;
+    padding-right: 210px;
   }
 
   .knowledge-stage-navigator {
     width: 190px;
-    transform: translate3d(158px, -50%, 0);
   }
 
   .knowledge-stage-branch-actions,
   .knowledge-stage-composer {
-    right: 48px;
+    right: 210px;
     width: auto;
     max-width: none;
   }
 
   .knowledge-stage-error {
-    right: 48px;
+    right: 210px;
   }
 
   .knowledge-stage-child-card {
@@ -6449,8 +6457,8 @@ a {
   }
 
   .knowledge-stage-child-card.is-expanded {
-    right: 0;
-    width: 100%;
+    right: -210px;
+    width: calc(100% + 210px);
   }
 }
 
@@ -6636,9 +6644,10 @@ a {
 
   .knowledge-stage-navigator {
     top: 46%;
+    bottom: auto;
+    height: min(60vh, 420px);
     width: 184px;
-    opacity: 0.16;
-    transform: translate3d(158px, -50%, 0);
+    transform: translateY(-50%);
   }
 
   .knowledge-stage-branch-actions {
@@ -6677,9 +6686,5 @@ a {
   .knowledge-stage-modal,
   .knowledge-stage-modal-backdrop {
     animation: none;
-  }
-
-  .knowledge-stage-navigator {
-    transition-duration: 0.01ms;
   }
 }

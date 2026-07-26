@@ -2,8 +2,8 @@
 
 import clsx from "clsx";
 import {
-  MINI_TREE_HEIGHT,
-  MINI_TREE_WIDTH,
+  MINI_TREE_VIEWBOX_WIDTH,
+  getMiniTreeCanvasHeight,
   positionMiniTreeNodes,
   type MiniTreeNode,
 } from "@/lib/ui/mini-tree-layout";
@@ -26,6 +26,7 @@ export function MiniTreeMap({
   className,
 }: MiniTreeMapProps) {
   const positioned = positionMiniTreeNodes(nodes);
+  const canvasHeight = getMiniTreeCanvasHeight(nodes);
   const positionById = new Map(positioned.map((node) => [node.id, node]));
   const activePathIds = new Set<string>();
   let pathNode = activeId ? positionById.get(activeId) : undefined;
@@ -43,9 +44,11 @@ export function MiniTreeMap({
         <i>{nodes.length}</i>
       </div>
 
-      <div className="magic-mini-tree-canvas">
+      <div className="magic-mini-tree-canvas" style={{ height: canvasHeight }}>
         <svg
-          viewBox={`0 0 ${MINI_TREE_WIDTH} ${MINI_TREE_HEIGHT}`}
+          viewBox={`0 0 ${MINI_TREE_VIEWBOX_WIDTH} ${canvasHeight}`}
+          preserveAspectRatio="none"
+          style={{ height: canvasHeight }}
           aria-hidden="true"
         >
           {positioned.map((node) => {
@@ -76,7 +79,7 @@ export function MiniTreeMap({
               activePathIds.has(node.id) && "is-active-path",
               node.unread && "is-unread"
             )}
-            style={{ left: node.x, top: node.y }}
+            style={{ left: `${node.x}%`, top: node.y }}
             onClick={() => onSelect(node.id)}
             aria-label={`定位到：${node.label}`}
             title={node.label}
