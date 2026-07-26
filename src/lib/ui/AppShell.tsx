@@ -4,19 +4,30 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useMemo } from "react";
 import clsx from "clsx";
+import {
+  BookOpenText,
+  FileStack,
+  Languages,
+  MessageCircleMore,
+  Network,
+  Settings2,
+  ShieldCheck,
+  Sparkles,
+  Video,
+} from "lucide-react";
 import { useSession } from "@/features/auth/session.client";
 import { t } from "@/lib/ui/i18n";
 
 const userNav = [
-  { href: "/chat", key: "chat" as const },
-  { href: "/explore", key: "explore" as const },
-  { href: "/files", key: "files" as const },
-  { href: "/settings", key: "settings" as const },
+  { href: "/chat", key: "chat" as const, icon: MessageCircleMore, hintZh: "线性对话与陪练", hintEn: "Chat & coaching" },
+  { href: "/explore", key: "explore" as const, icon: Network, hintZh: "非线性知识地图", hintEn: "Knowledge maps" },
+  { href: "/files", key: "files" as const, icon: FileStack, hintZh: "资料解析与洞察", hintEn: "Sources & insights" },
+  { href: "/settings", key: "settings" as const, icon: Settings2, hintZh: "偏好与账户", hintEn: "Preferences & account" },
 ];
 
 const adminNav = [
-  { href: "/admin/videos", key: "adminVideos" as const },
-  { href: "/admin/moderation", key: "adminModeration" as const },
+  { href: "/admin/videos", key: "adminVideos" as const, icon: Video, hintZh: "内容资源管理", hintEn: "Content library" },
+  { href: "/admin/moderation", key: "adminModeration" as const, icon: ShieldCheck, hintZh: "安全与事件", hintEn: "Safety & events" },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -27,6 +38,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const isImmersivePage = isChatPage || isExplorePage;
 
   const copy = t(user?.locale ?? "zh");
+  const isZh = user?.locale !== "en";
+  const activeItem = [...userNav, ...adminNav].find(
+    (item) => pathname === item.href || pathname.startsWith(`${item.href}/`)
+  );
 
   const navItems = useMemo(() => {
     if (!user) return userNav;
@@ -34,25 +49,37 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [user]);
 
   return (
-    <div
-      className={clsx(
-        "bg-[radial-gradient(circle_at_20%_20%,#fecdd3,transparent_36%),radial-gradient(circle_at_90%_0%,#bae6fd,transparent_34%),linear-gradient(180deg,#f8fafc_0%,#f1f5f9_100%)] text-zinc-900",
-        isImmersivePage ? "h-screen overflow-hidden" : "min-h-screen"
-      )}
-    >
+    <div className={clsx("magic-app-surface", isImmersivePage ? "h-screen overflow-hidden" : "min-h-screen")}>
       {!isExplorePage ? (
-        <header className="sticky top-0 z-40 border-b border-black/10 bg-white/70 backdrop-blur-xl">
-          <div className="mx-auto flex w-full max-w-[1520px] items-center justify-between gap-4 px-4 py-3 md:px-6">
+        <header className="magic-global-header">
+          <div className="magic-header-brand">
+            <div className="magic-brand-mark">
+              <Sparkles size={17} />
+            </div>
             <div>
-              <div className="text-sm uppercase tracking-[0.2em] text-zinc-500">Magic Agent</div>
-              <div className="text-2xl font-semibold tracking-tight text-zinc-900">{copy.appTagline}</div>
+              <span>Magic Agent</span>
+              <strong>{activeItem ? copy[activeItem.key] : copy.appTagline}</strong>
+            </div>
+          </div>
+
+          <div className="magic-header-context">
+            <BookOpenText size={15} />
+            <span>{isZh ? "把练习、资料和理解连接起来" : "Connect practice, sources, and understanding"}</span>
+          </div>
+
+          <div className="magic-header-actions">
+            <div className="magic-system-status">
+              <i />
+              {isZh ? "系统在线" : "Online"}
             </div>
             <button
               type="button"
-              onClick={() => setLocale(user?.locale === "zh" ? "en" : "zh")}
-              className="rounded-full border border-black/10 bg-white px-3 py-1.5 text-sm font-semibold uppercase tracking-wide hover:bg-zinc-50"
+              onClick={() => setLocale(isZh ? "en" : "zh")}
+              className="magic-language-button"
+              aria-label={isZh ? "Switch to English" : "切换到中文"}
             >
-              {user?.locale === "zh" ? "EN" : "中文"}
+              <Languages size={15} />
+              {isZh ? "EN" : "中文"}
             </button>
           </div>
         </header>
@@ -60,42 +87,59 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <div
         className={clsx(
-          "mx-auto grid w-full max-w-[1520px] grid-cols-1 gap-4 px-4 md:px-6",
+          "magic-app-layout",
           isExplorePage
             ? "h-screen max-w-none overflow-hidden p-0"
             : isChatPage
-              ? "h-[calc(100vh-86px)] overflow-hidden py-4"
-            : "py-4 md:grid-cols-[240px_minmax(0,1fr)]"
+              ? "magic-chat-layout"
+              : "magic-page-layout"
         )}
       >
         {!isImmersivePage ? (
-          <aside className="sticky top-[86px] h-[calc(100vh-102px)] overflow-y-auto rounded-3xl border border-black/10 bg-white/85 p-3 backdrop-blur">
-            <div className="mb-3 px-3 py-2">
-              <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Signed in</p>
-              <p className="text-sm font-semibold">{user?.name ?? "Guest"}</p>
-              <p className="text-xs text-zinc-500">{user?.role ?? "user"}</p>
+          <aside className="magic-sidebar">
+            <div className="magic-profile-card">
+              <div className="magic-profile-avatar">{(user?.name ?? "G").slice(0, 1).toUpperCase()}</div>
+              <div>
+                <span>{isZh ? "探索者" : "Explorer"}</span>
+                <strong>{user?.name ?? "Guest"}</strong>
+                <small>{user?.role ?? "user"}</small>
+              </div>
             </div>
-            <nav className="space-y-1">
+            <nav className="magic-primary-nav">
+              <p>{isZh ? "工作空间" : "Workspace"}</p>
               {navItems.map((item) => {
                 const label = copy[item.key] ?? item.key;
                 const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+                const Icon = item.icon;
                 return (
                   <Link
                     key={item.href}
                     href={item.href}
-                    className={clsx(
-                      "block rounded-2xl px-3 py-2 text-sm font-medium transition",
-                      active ? "bg-black text-white" : "text-zinc-700 hover:bg-zinc-100"
-                    )}
+                    className={clsx("magic-nav-item", active && "is-active")}
                   >
-                    {label}
+                    <span className="magic-nav-icon">
+                      <Icon size={16} />
+                    </span>
+                    <span>
+                      <strong>{label}</strong>
+                      <small>{isZh ? item.hintZh : item.hintEn}</small>
+                    </span>
                   </Link>
                 );
               })}
             </nav>
+            <Link href="/explore" className="magic-sidebar-cta">
+              <Network size={18} />
+              <span>
+                <strong>{isZh ? "打开层级卡片" : "Open Magic Atlas"}</strong>
+                <small>{isZh ? "把对话变成知识地图" : "Turn chat into a map"}</small>
+              </span>
+            </Link>
           </aside>
         ) : null}
-        <main className={clsx("min-w-0", isImmersivePage ? "h-full overflow-hidden" : "")}>{children}</main>
+        <main className={clsx("magic-main-content", isImmersivePage && "h-full overflow-hidden")}>
+          {children}
+        </main>
       </div>
     </div>
   );

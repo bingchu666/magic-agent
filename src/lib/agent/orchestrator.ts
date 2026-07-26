@@ -167,6 +167,10 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
     continuationTarget: continuationTarget
       ? `Point ${requestedPoint}: ${continuationTarget}`
       : undefined,
+    responseFormatPrompt:
+      input.responseMode === "annotated"
+        ? "Mark 3 to 6 concrete, useful concepts that a learner may want to inspect next by wrapping only the exact term in double square brackets, for example [[misdirection]]. Keep the markers inline inside the natural answer. Do not explain the marker syntax, do not put full sentences inside markers, and do not mark generic words."
+        : undefined,
   };
 
   const generationPromise = input.onModelToken

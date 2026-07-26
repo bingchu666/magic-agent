@@ -88,6 +88,21 @@ describe("model gateway prompt", () => {
     expect(system).toContain("retrieved database knowledge is optional supporting context");
   });
 
+  it("adds feature-scoped response annotations without changing the user question", () => {
+    const user = latestUserMessage(
+      buildMessages(
+        input({
+          userMessage: "解释量子纠缠",
+          responseFormatPrompt: "Wrap useful concepts in double square brackets.",
+        })
+      )
+    );
+
+    expect(user).toContain("解释量子纠缠");
+    expect(user).toContain("Response format:");
+    expect(user).toContain("Wrap useful concepts in double square brackets.");
+  });
+
   it("detects a refusal only when a teaching request has retrieved material", () => {
     const refusal =
       "I cannot teach the full method because this is a published commercial effect protected by copyright.";

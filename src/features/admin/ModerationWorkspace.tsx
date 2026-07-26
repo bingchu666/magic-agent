@@ -36,21 +36,30 @@ export function ModerationWorkspace() {
   }, []);
 
   return (
-    <div className="space-y-4">
-      <div className="rounded-3xl border border-black/10 bg-white/85 p-4 shadow-sm backdrop-blur">
-        <h1 className="text-xl font-semibold text-zinc-900">
-          {locale === "zh" ? "安全与审计" : "Safety and Audit"}
-        </h1>
-        <p className="mt-1 text-sm text-zinc-500">
-          {locale === "zh"
-            ? "查看安全降级记录、关键事件与可观测日志。"
-            : "Review safety downgrades, key events, and observability logs."}
-        </p>
-      </div>
+    <div className="magic-page magic-admin-page">
+      <header className="magic-page-hero magic-admin-hero">
+        <div>
+          <span>Safety operations</span>
+          <h1>{locale === "zh" ? "安全与审计" : "Safety and audit"}</h1>
+          <p>
+            {locale === "zh"
+              ? "查看安全降级记录、关键事件与可观测日志。"
+              : "Review safety downgrades, key events, and observability logs."}
+          </p>
+        </div>
+        <div className="magic-page-stat">
+          <strong>{audits.length}</strong>
+          <span>{locale === "zh" ? "审计记录" : "audits"}</span>
+        </div>
+        <div className="magic-page-stat">
+          <strong>{events.length}</strong>
+          <span>{locale === "zh" ? "事件" : "events"}</span>
+        </div>
+      </header>
 
       {error ? <p className="text-xs text-rose-600">{error}</p> : null}
 
-      <section className="rounded-3xl border border-black/10 bg-white/85 p-4 shadow-sm backdrop-blur">
+      <section className="magic-admin-card rounded-3xl border border-black/10 bg-white/85 p-4 shadow-sm backdrop-blur">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-600">
           {locale === "zh" ? "审计日志" : "Audit Logs"}
         </h2>
@@ -69,7 +78,7 @@ export function ModerationWorkspace() {
         </div>
       </section>
 
-      <section className="rounded-3xl border border-black/10 bg-white/85 p-4 shadow-sm backdrop-blur">
+      <section className="magic-admin-card rounded-3xl border border-black/10 bg-white/85 p-4 shadow-sm backdrop-blur">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-600">
           {locale === "zh" ? "事件日志" : "Events"}
         </h2>

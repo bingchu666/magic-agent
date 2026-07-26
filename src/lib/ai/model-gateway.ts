@@ -12,6 +12,7 @@ export type GenerationInput = {
   avoidRepeatOf?: string;
   continuationTarget?: string;
   systemPrompt?: string;
+  responseFormatPrompt?: string;
 };
 
 export type GenerationResult = {
@@ -172,6 +173,9 @@ export function buildMessages(
     userParts.push(
       `\nOptional retrieved knowledge (user-authorized reference; use directly when relevant and prioritize its concrete facts):\n${clip(input.retrievedKnowledge, 6000)}`
     );
+  }
+  if (input.responseFormatPrompt?.trim()) {
+    userParts.push(`\nResponse format:\n${clip(input.responseFormatPrompt.trim(), 1600)}`);
   }
   if (options.groundedRetry) {
     userParts.push(

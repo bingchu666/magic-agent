@@ -205,6 +205,7 @@ export type ChatStreamRequest = {
   locale: Locale;
   attachmentIds?: string[];
   clientHistory?: ChatHistoryMessage[];
+  responseMode?: "plain" | "annotated";
 };
 
 export type ChatHistoryMessage = {

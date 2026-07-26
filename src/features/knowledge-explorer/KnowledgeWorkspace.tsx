@@ -24,13 +24,22 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { CSSProperties, FormEvent, MouseEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type FormEvent,
+  type MouseEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { consumeSseStream } from "@/features/chat-agent/sse";
 import { useSession } from "@/features/auth/session.client";
 import { ChatHistoryMessage, FileAsset, Locale } from "@/lib/domain/types";
 import { createId } from "@/lib/domain/utils";
+import { MiniTreeMap, type MiniTreeNode } from "@/lib/ui/MiniTreeMap";
 
 type CardRelation = "root" | "child" | "related" | "branch";
 type CardStatus = "idle" | "streaming" | "error";
@@ -417,29 +426,15 @@ export function KnowledgeWorkspace() {
     return { width: maxX, height: maxY };
   }, [cards]);
 
-  const edges = useMemo(
+  const atlasMapNodes = useMemo<MiniTreeNode[]>(
     () =>
-      cards.flatMap((card) => {
-        if (!card.parentId) return [];
-        const parent = cards.find((candidate) => candidate.id === card.parentId);
-        if (!parent) return [];
-        const startX = parent.x + CARD_WIDTH;
-        const startY = parent.y + 52;
-        const endX = card.x;
-        const endY = card.y + 52;
-        const dx = endX - startX;
-        const dy = endY - startY;
-        return [
-          {
-            id: `${parent.id}_${card.id}`,
-            x: startX,
-            y: startY,
-            width: Math.sqrt(dx * dx + dy * dy),
-            angle: Math.atan2(dy, dx) * (180 / Math.PI),
-            relation: card.relation,
-          },
-        ];
-      }),
+      cards.map((card) => ({
+        id: card.id,
+        parentId: card.parentId,
+        label: card.title,
+        relation: card.relation,
+        unread: card.unread,
+      })),
     [cards]
   );
 
@@ -721,9 +716,9 @@ export function KnowledgeWorkspace() {
 
   const activeLineage = activeCard ? lineageFor(cards, activeCard.id) : [];
   const themeLabel: Record<ThemeName, string> = {
-    parchment: "纸页",
-    midnight: "夜航",
-    sage: "鼠尾草",
+    parchment: "纯白",
+    midnight: "冷白",
+    sage: "浅绿",
   };
 
   return (
@@ -918,18 +913,6 @@ export function KnowledgeWorkspace() {
               }}
             >
               <div className="atlas-grid" />
-              {edges.map((edge) => (
-                <div
-                  key={edge.id}
-                  className={`atlas-edge relation-${edge.relation}`}
-                  style={{
-                    left: edge.x,
-                    top: edge.y,
-                    width: edge.width,
-                    transform: `rotate(${edge.angle}deg)`,
-                  }}
-                />
-              ))}
 
               {cards.map((card, cardIndex) => {
                 const preview = termPreview?.cardId === card.id ? termPreview : null;
@@ -1134,6 +1117,14 @@ export function KnowledgeWorkspace() {
             </div>
             <BrainCircuit size={22} />
           </div>
+
+          <MiniTreeMap
+            nodes={atlasMapNodes}
+            activeId={activeCardId}
+            onSelect={focusCard}
+            label="卡片导航"
+            className="atlas-mini-tree"
+          />
 
           {activeCard ? (
             <>

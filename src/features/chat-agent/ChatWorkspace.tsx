@@ -1,20 +1,46 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import Link from "next/link";
+import {
+  FilePlus2,
+  FileText,
+  ArrowUpRight,
+  MessageCircleMore,
+  Network,
+  Paperclip,
+  Plus,
+  Send,
+  Sparkles,
+  Wand2,
+  X,
+} from "lucide-react";
 import { ChatHistoryMessage, FileAsset, LessonPayload, Message, Thread } from "@/lib/domain/types";
 import { createId } from "@/lib/domain/utils";
 import { useSession } from "@/features/auth/session.client";
 import { consumeSseStream } from "@/features/chat-agent/sse";
 import { MagicLessonCards } from "@/features/chat-agent/MagicLessonCards";
 import { AssistantMarkdown } from "@/features/chat-agent/AssistantMarkdown";
+import { MiniTreeMap, type MiniTreeNode } from "@/lib/ui/MiniTreeMap";
 import { t } from "@/lib/ui/i18n";
 
 type UiMessage = Pick<Message, "id" | "role" | "content" | "locale" | "createdAt" | "lessonPayload">;
 
 type ThreadRuntimeState = {
   messages: UiMessage[];
+  conceptParentByMessage?: Record<string, string>;
+};
+
+type KeywordPopup = {
+  messageId: string;
+  term: string;
+  explanation: string;
+  question: string;
+  loading: boolean;
+  error: string;
+  x: number;
+  y: number;
 };
 
 function createLocalThread(userId: string, locale: "zh" | "en"): Thread {
@@ -37,6 +63,24 @@ function buildClientHistory(messages: UiMessage[]): ChatHistoryMessage[] {
       role: item.role as "user" | "assistant",
       content: item.content,
     }));
+}
+
+function extractConceptTerms(messages: UiMessage[]) {
+  const terms: Array<{ term: string; messageId: string }> = [];
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    const annotated = Array.from(message.content.matchAll(/\[\[([^\]]+)\]\]/g)).map(
+      (match) => match[1].trim()
+    );
+    const emphasized = Array.from(message.content.matchAll(/\*\*([^*\n]{2,24})\*\*/g)).map(
+      (match) => match[1].trim()
+    );
+    for (const term of [...annotated, ...emphasized]) {
+      if (!term || terms.some((item) => item.term === term)) continue;
+      terms.push({ term, messageId: message.id });
+    }
+  }
+  return terms.slice(-6);
 }
 
 async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -79,6 +123,9 @@ export function ChatWorkspace() {
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [deletingThreadId, setDeletingThreadId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [keywordPopup, setKeywordPopup] = useState<KeywordPopup | null>(null);
+  const [mapFocusId, setMapFocusId] = useState("chat-root");
+  const [conceptParentByMessage, setConceptParentByMessage] = useState<Record<string, string>>({});
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -87,9 +134,32 @@ export function ChatWorkspace() {
   const initializedRef = useRef(false);
 
   const readyFiles = useMemo(() => files.filter((file) => file.status === "ready"), [files]);
+  const conceptTerms = useMemo(() => extractConceptTerms(messages), [messages]);
+  const chatMapNodes = useMemo<MiniTreeNode[]>(
+    () => [
+      {
+        id: "chat-root",
+        parentId: null,
+        label:
+          threads.find((thread) => thread.id === activeThreadId)?.title ??
+          (locale === "zh" ? "当前主题" : "Current topic"),
+        relation: "root",
+      },
+      ...conceptTerms.map((concept) => ({
+        id: `${concept.messageId}:${concept.term}`,
+        parentId: conceptParentByMessage[concept.messageId] ?? "chat-root",
+        label: concept.term,
+        relation: "child" as const,
+      })),
+    ],
+    [activeThreadId, conceptParentByMessage, conceptTerms, locale, threads]
+  );
 
   const clearConversationState = () => {
     setMessages([]);
+    setKeywordPopup(null);
+    setMapFocusId("chat-root");
+    setConceptParentByMessage({});
   };
 
   const touchThread = (threadId: string) => {
@@ -119,6 +189,10 @@ export function ChatWorkspace() {
             messages: [...existing.messages, ...previous.messages].filter(
               (item, idx, arr) => idx === arr.findIndex((x) => x.id === item.id)
             ),
+            conceptParentByMessage: {
+              ...(existing.conceptParentByMessage ?? {}),
+              ...(previous.conceptParentByMessage ?? {}),
+            },
           }
         : previous;
       delete threadStoreRef.current[localThreadId];
@@ -174,6 +248,7 @@ export function ChatWorkspace() {
             if (!item?.thread?.id || !item?.state) continue;
             threadStoreRef.current[item.thread.id] = {
               messages: Array.isArray(item.state.messages) ? item.state.messages : [],
+              conceptParentByMessage: item.state.conceptParentByMessage ?? {},
             };
           }
           const preferred =
@@ -216,14 +291,16 @@ export function ChatWorkspace() {
     }
 
     setMessages(state.messages || []);
+    setConceptParentByMessage(state.conceptParentByMessage ?? {});
   }, [activeThreadId]);
 
   useEffect(() => {
     if (!activeThreadId) return;
     threadStoreRef.current[activeThreadId] = {
       messages,
+      conceptParentByMessage,
     };
-  }, [activeThreadId, messages]);
+  }, [activeThreadId, conceptParentByMessage, messages]);
 
   useEffect(() => {
     if (!initializedRef.current) return;
@@ -239,7 +316,7 @@ export function ChatWorkspace() {
       })),
     };
     window.localStorage.setItem(storageKey, JSON.stringify(serialized));
-  }, [threads, activeThreadId, user?.id, messages]);
+  }, [threads, activeThreadId, user?.id, messages, conceptParentByMessage]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -253,7 +330,7 @@ export function ChatWorkspace() {
     return "Uploaded";
   };
 
-  const sendMessage = async (prefill?: string) => {
+  const sendMessage = async (prefill?: string, parentConceptId = "chat-root") => {
     const content = (prefill ?? input).trim();
     if (!content || sending) return;
 
@@ -269,6 +346,10 @@ export function ChatWorkspace() {
     };
 
     const assistantMessageId = createId("local_assistant");
+    setConceptParentByMessage((previous) => ({
+      ...previous,
+      [assistantMessageId]: parentConceptId,
+    }));
 
     setMessages((prev) => [
       ...prev,
@@ -329,6 +410,7 @@ export function ChatWorkspace() {
           locale,
           attachmentIds: selectedAttachments,
           clientHistory: historyForRequest,
+          responseMode: "annotated",
         }),
       });
 
@@ -478,28 +560,108 @@ export function ChatWorkspace() {
     }
   };
 
+  const openKeywordPopup = async (
+    message: UiMessage,
+    term: string,
+    event: MouseEvent<HTMLButtonElement>
+  ) => {
+    if (keywordPopup?.messageId === message.id && keywordPopup.term === term) {
+      setKeywordPopup(null);
+      return;
+    }
+
+    const wrapper = event.currentTarget.closest(".magic-message-bubble-wrap");
+    const wrapperRect = wrapper?.getBoundingClientRect();
+    const buttonRect = event.currentTarget.getBoundingClientRect();
+    const x = wrapperRect
+      ? Math.max(0, Math.min(buttonRect.left - wrapperRect.left, wrapperRect.width - 290))
+      : 0;
+    const y = wrapperRect ? buttonRect.bottom - wrapperRect.top + 8 : 34;
+    const next: KeywordPopup = {
+      messageId: message.id,
+      term,
+      explanation: "",
+      question: "",
+      loading: true,
+      error: "",
+      x,
+      y,
+    };
+    setKeywordPopup(next);
+    setMapFocusId(`${message.id}:${term}`);
+
+    try {
+      const response = await fetch("/api/explore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "preview",
+          locale,
+          term,
+          context: message.content,
+        }),
+      });
+      const data = (await response.json()) as { text?: string; error?: string };
+      if (!response.ok || !data.text) throw new Error(data.error || "Preview failed");
+      setKeywordPopup((current) =>
+        current?.messageId === message.id && current.term === term
+          ? { ...current, explanation: data.text ?? "", loading: false }
+          : current
+      );
+    } catch (previewError) {
+      setKeywordPopup((current) =>
+        current?.messageId === message.id && current.term === term
+          ? {
+              ...current,
+              loading: false,
+              error: previewError instanceof Error ? previewError.message : "Preview failed",
+            }
+          : current
+      );
+    }
+  };
+
+  const followUpKeyword = () => {
+    if (!keywordPopup) return;
+    const parentConceptId = `${keywordPopup.messageId}:${keywordPopup.term}`;
+    const question = keywordPopup.question.trim();
+    const prompt = question
+      ? `关于你刚才提到的“${keywordPopup.term}”：${question}`
+      : `请结合刚才的回答，进一步解释“${keywordPopup.term}”，并给一个具体例子。`;
+    setKeywordPopup(null);
+    setMapFocusId(parentConceptId);
+    void sendMessage(prompt, parentConceptId);
+  };
+
   return (
-    <div className="grid h-full min-w-0 grid-cols-1 gap-4 overflow-x-hidden xl:grid-cols-[240px_minmax(0,1fr)_300px]">
-      <section className="h-full min-w-0 overflow-y-auto overflow-x-hidden rounded-2xl border border-zinc-200 bg-white p-3">
-        <div className="mb-3 grid grid-cols-4 gap-1 rounded-xl bg-zinc-100 p-1">
-          <Link href="/chat" className="rounded-lg bg-[#202123] px-2 py-1.5 text-center text-xs font-semibold text-white">
+    <div className="magic-chat-studio grid h-full min-w-0 grid-cols-1 gap-4 overflow-x-hidden xl:grid-cols-[240px_minmax(0,1fr)_300px]">
+      <section className="magic-chat-panel magic-thread-panel h-full min-w-0 overflow-y-auto overflow-x-hidden rounded-2xl border border-zinc-200 bg-white p-3">
+        <div className="magic-chat-tabs mb-3 grid grid-cols-4 gap-1 rounded-xl bg-zinc-100 p-1">
+          <Link href="/chat" className="is-active rounded-lg bg-[#202123] px-2 py-1.5 text-center text-xs font-semibold text-white">
             {copy.chat}
           </Link>
-          <Link href="/explore" className="rounded-lg px-2 py-1.5 text-center text-xs font-semibold text-zinc-700 hover:bg-white">
-            {copy.explore}
+          <Link href="/explore" className="rounded-lg px-2 py-1.5 text-center text-xs font-semibold text-zinc-700 hover:bg-white" title={copy.explore}>
+            <Network size={14} />
+            <span>{copy.explore}</span>
           </Link>
-          <Link href="/files" className="rounded-lg px-2 py-1.5 text-center text-xs font-semibold text-zinc-700 hover:bg-white">
-            {copy.files}
+          <Link href="/files" className="rounded-lg px-2 py-1.5 text-center text-xs font-semibold text-zinc-700 hover:bg-white" title={copy.files}>
+            <FileText size={14} />
+            <span>{copy.files}</span>
           </Link>
-          <Link href="/settings" className="rounded-lg px-2 py-1.5 text-center text-xs font-semibold text-zinc-700 hover:bg-white">
-            {copy.settings}
+          <Link href="/settings" className="rounded-lg px-2 py-1.5 text-center text-xs font-semibold text-zinc-700 hover:bg-white" title={copy.settings}>
+            <Wand2 size={14} />
+            <span>{copy.settings}</span>
           </Link>
         </div>
 
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-600">
-            {locale === "zh" ? "对话" : "Threads"}
-          </h2>
+        <div className="magic-thread-heading mb-3 flex items-center justify-between">
+          <div>
+            <span>{locale === "zh" ? "Conversation library" : "Conversation library"}</span>
+            <h2>
+              <MessageCircleMore size={16} />
+              {locale === "zh" ? "对话档案" : "Threads"}
+            </h2>
+          </div>
           <button
             type="button"
             onClick={async () => {
@@ -516,31 +678,31 @@ export function ChatWorkspace() {
                 setError(err instanceof Error ? err.message : "Failed to create thread");
               }
             }}
-            className="rounded-full border border-zinc-300 px-3 py-1 text-xs font-semibold text-zinc-700 hover:bg-zinc-100"
+            aria-label={copy.newThread}
+            title={copy.newThread}
           >
-            {copy.newThread}
+            <Plus size={16} />
           </button>
         </div>
 
-        <div className="space-y-2">
-          {threads.map((thread) => (
+        <div className="magic-thread-list space-y-2">
+          {threads.map((thread, index) => (
             <div
               key={thread.id}
               className={clsx(
-                "w-full rounded-xl border px-2 py-2 transition",
-                activeThreadId === thread.id
-                  ? "border-[#202123] bg-[#202123] text-white"
-                  : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50"
+                "magic-thread-card w-full rounded-xl border px-2 py-2 transition",
+                activeThreadId === thread.id && "is-active"
               )}
             >
               <div className="flex items-start gap-2">
+                <span className="magic-thread-number">{String(index + 1).padStart(2, "0")}</span>
                 <button
                   type="button"
                   onClick={() => setActiveThreadId(thread.id)}
                   className="min-w-0 flex-1 text-left"
                 >
                   <p className="truncate text-sm font-semibold">{thread.title}</p>
-                  <p className={clsx("mt-1 text-xs", activeThreadId === thread.id ? "text-zinc-300" : "text-zinc-500")}>
+                  <p className="mt-1 text-xs">
                     {new Date(thread.updatedAt).toLocaleString()}
                   </p>
                 </button>
@@ -548,59 +710,157 @@ export function ChatWorkspace() {
                   type="button"
                   onClick={() => void removeThread(thread.id)}
                   disabled={deletingThreadId === thread.id}
-                  className={clsx(
-                    "rounded-md px-2 py-1 text-xs font-semibold",
-                    activeThreadId === thread.id
-                      ? "bg-white/15 text-white hover:bg-white/25"
-                      : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
-                  )}
+                  className="magic-thread-delete"
+                  aria-label={locale === "zh" ? "删除对话" : "Delete thread"}
                 >
-                  {deletingThreadId === thread.id ? "..." : locale === "zh" ? "删" : "Del"}
+                  {deletingThreadId === thread.id ? "…" : "×"}
                 </button>
               </div>
             </div>
           ))}
         </div>
+
+        <Link href="/explore" className="magic-thread-atlas-cta">
+          <span>
+            <Network size={16} />
+          </span>
+          <div>
+            <strong>{locale === "zh" ? "换一种思考方式" : "Think non-linearly"}</strong>
+            <small>{locale === "zh" ? "把这次对话放进层级卡片" : "Open the card-based workspace"}</small>
+          </div>
+        </Link>
       </section>
 
-      <section className="flex h-full min-w-0 flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white">
-        <div className="flex-1 overflow-y-auto px-4 py-4">
+      <section className="magic-chat-panel magic-conversation-panel flex h-full min-w-0 flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white">
+        <div className="magic-conversation-header">
+          <div>
+            <span>
+              <i />
+              {locale === "zh" ? "AI 陪练已就绪" : "AI coach ready"}
+            </span>
+            <h1>{threads.find((thread) => thread.id === activeThreadId)?.title ?? (locale === "zh" ? "新对话" : "New conversation")}</h1>
+          </div>
+          <div className="magic-model-pill">
+            <Sparkles size={13} />
+            Deep reasoning
+          </div>
+        </div>
+
+        <div className="magic-message-scroll flex-1 overflow-y-auto px-4 py-4">
           {!messages.length ? (
-            <div className="grid h-full place-items-center rounded-2xl border border-dashed border-zinc-300 bg-zinc-50">
-              <div className="text-center">
-                <h3 className="text-2xl font-semibold text-zinc-900">Magic Agent</h3>
-                <p className="mt-1 text-sm text-zinc-500">
-                  {locale === "zh"
-                    ? "告诉我你要练什么：纸牌、硬币、舞台、台词、流程。"
-                    : "Tell me what you want to practice: cards, coins, stage, script, or routine."}
-                </p>
+            <div className="magic-chat-empty">
+              <div className="magic-empty-orbit">
+                <Sparkles size={25} />
+                <i />
+                <i />
+              </div>
+              <span>{locale === "zh" ? "从一个目标开始" : "Start with a goal"}</span>
+              <h3>{locale === "zh" ? "今天想把什么练明白？" : "What do you want to master today?"}</h3>
+              <p>
+                {locale === "zh"
+                  ? "描述你的场景、道具或卡住的环节。我会把答案拆成可行动的练习。"
+                  : "Describe the scene, prop, or blocker. I’ll turn it into actionable practice."}
+              </p>
+              <div className="magic-prompt-suggestions">
+                {[
+                  locale === "zh" ? "设计一个三分钟纸牌流程" : "Build a 3-minute card routine",
+                  locale === "zh" ? "分析我的舞台节奏" : "Analyze my stage pacing",
+                  locale === "zh" ? "制定一周手法练习计划" : "Plan a week of sleight practice",
+                ].map((prompt) => (
+                  <button key={prompt} type="button" onClick={() => void sendMessage(prompt)}>
+                    {prompt}
+                    <Send size={13} />
+                  </button>
+                ))}
               </div>
             </div>
           ) : (
-            <div className="space-y-5">
+            <div className="magic-message-list space-y-5">
               {messages.map((message) => (
-                <div key={message.id} className={clsx("flex", message.role === "user" ? "justify-end" : "justify-start")}>
-                  <div
-                    className={clsx(
-                      "max-w-[92%] break-words rounded-2xl px-4 py-3 text-[15px] leading-7",
-                      message.role === "user"
-                        ? "bg-[#202123] text-white"
-                        : "border border-zinc-200 bg-zinc-50 text-zinc-800"
-                    )}
-                  >
-                    {message.role === "assistant" && message.lessonPayload ? (
-                      <MagicLessonCards
-                        payload={message.lessonPayload}
-                        locale={locale}
-                        onQuickAsk={(prompt) => {
-                          void sendMessage(prompt);
-                        }}
-                      />
-                    ) : message.role === "assistant" ? (
-                      <AssistantMarkdown content={message.content || (sending ? "..." : "")} />
-                    ) : (
-                      <p className="whitespace-pre-wrap">{message.content || (sending ? "..." : "")}</p>
-                    )}
+                <div
+                  key={message.id}
+                  data-message-id={message.id}
+                  className={clsx("magic-message-row flex", message.role === "user" ? "is-user justify-end" : "is-assistant justify-start")}
+                >
+                  {message.role === "assistant" ? (
+                    <div className="magic-message-avatar">
+                      <Sparkles size={14} />
+                    </div>
+                  ) : null}
+                  <div className="magic-message-bubble-wrap">
+                    <div
+                      className={clsx(
+                        "magic-message-bubble max-w-[92%] break-words rounded-2xl px-4 py-3 text-[15px] leading-7",
+                        message.role === "user" ? "is-user" : "is-assistant"
+                      )}
+                    >
+                      {message.role === "assistant" && message.lessonPayload ? (
+                        <MagicLessonCards
+                          payload={message.lessonPayload}
+                          locale={locale}
+                          onQuickAsk={(prompt) => {
+                            void sendMessage(prompt);
+                          }}
+                        />
+                      ) : message.role === "assistant" ? (
+                        <AssistantMarkdown
+                          content={message.content || (sending ? "..." : "")}
+                          onConcept={(term, event) => void openKeywordPopup(message, term, event)}
+                        />
+                      ) : (
+                        <p className="whitespace-pre-wrap">{message.content || (sending ? "..." : "")}</p>
+                      )}
+                    </div>
+
+                    {keywordPopup?.messageId === message.id ? (
+                      <aside
+                        className="magic-keyword-popover"
+                        style={{ left: keywordPopup.x, top: keywordPopup.y }}
+                      >
+                        <header>
+                          <div>
+                            <span>Concept preview</span>
+                            <h3>{keywordPopup.term}</h3>
+                          </div>
+                          <button type="button" onClick={() => setKeywordPopup(null)} aria-label="关闭关键词卡片">
+                            <X size={14} />
+                          </button>
+                        </header>
+
+                        <div className="magic-keyword-explanation">
+                          {keywordPopup.loading ? (
+                            <p className="is-loading">
+                              <i />
+                              {locale === "zh" ? "正在结合上下文解释…" : "Explaining in context…"}
+                            </p>
+                          ) : (
+                            <p>{keywordPopup.error || keywordPopup.explanation}</p>
+                          )}
+                        </div>
+
+                        <div className="magic-keyword-followup">
+                          <input
+                            value={keywordPopup.question}
+                            onChange={(event) =>
+                              setKeywordPopup((current) =>
+                                current ? { ...current, question: event.target.value } : current
+                              )
+                            }
+                            onKeyDown={(event) => {
+                              if (event.nativeEvent.isComposing) return;
+                              if (event.key === "Enter") {
+                                event.preventDefault();
+                                followUpKeyword();
+                              }
+                            }}
+                            placeholder={locale === "zh" ? `追问“${keywordPopup.term}”…` : `Ask about "${keywordPopup.term}"…`}
+                          />
+                          <button type="button" onClick={followUpKeyword} aria-label={locale === "zh" ? "追问关键词" : "Ask follow-up"}>
+                            <ArrowUpRight size={14} />
+                          </button>
+                        </div>
+                      </aside>
+                    ) : null}
                   </div>
                 </div>
               ))}
@@ -609,14 +869,13 @@ export function ChatWorkspace() {
           )}
         </div>
 
-        <div className="border-t border-zinc-200 p-3">
-          <div className="rounded-2xl border border-zinc-300 bg-white p-2">
+        <div className="magic-composer-wrap border-t border-zinc-200 p-3">
+          <div className="magic-composer rounded-2xl border border-zinc-300 bg-white p-2">
             <textarea
               value={input}
               onChange={(event) => setInput(event.target.value)}
               placeholder={copy.chatInputPlaceholder}
               rows={3}
-              className="w-full resize-none rounded-xl border border-transparent px-3 py-2 text-sm outline-none focus:border-zinc-300"
               onKeyDown={(event) => {
                 if (event.nativeEvent.isComposing) return;
                 if (event.key === "Enter" && !event.shiftKey) {
@@ -625,28 +884,32 @@ export function ChatWorkspace() {
                 }
               }}
             />
-            <div className="mt-2 flex items-center justify-between gap-3">
-              <p className="truncate text-xs text-zinc-500">
+            <div className="magic-composer-actions">
+              <p>
                 {selectedAttachments.length > 0
                   ? `${copy.attach}: ${selectedAttachments.length}`
-                  : copy.uploadHint}
+                  : locale === "zh"
+                    ? "Enter 发送 · Shift + Enter 换行"
+                    : "Enter to send · Shift + Enter for a new line"}
               </p>
-              <div className="flex items-center gap-2">
+              <div>
                 <button
                   type="button"
                   onClick={() => uploadInputRef.current?.click()}
                   disabled={uploadingAttachments}
-                  className="rounded-full border border-zinc-300 bg-white px-3 py-2 text-xs font-semibold text-zinc-700 hover:bg-zinc-100 disabled:opacity-60"
+                  className="magic-attach-button"
                 >
-                  {uploadingAttachments ? "..." : copy.attach}
+                  {uploadingAttachments ? <span>…</span> : <Paperclip size={15} />}
+                  {copy.attach}
                 </button>
                 <button
                   type="button"
                   onClick={() => void sendMessage()}
                   disabled={!input.trim() || sending}
-                  className="rounded-full bg-[#202123] px-5 py-2 text-xs font-semibold uppercase tracking-wide text-white disabled:opacity-40"
+                  className="magic-send-button"
                 >
-                  {sending ? "..." : copy.send}
+                  {sending ? <span>…</span> : <Send size={15} />}
+                  {copy.send}
                 </button>
               </div>
             </div>
@@ -661,28 +924,58 @@ export function ChatWorkspace() {
               }}
             />
           </div>
-          {error ? <p className="mt-2 text-xs text-rose-600">{error}</p> : null}
+          {error ? <p className="magic-chat-error">{error}</p> : null}
         </div>
       </section>
 
-      <section className="h-full min-w-0 space-y-3 overflow-y-auto overflow-x-hidden rounded-2xl border border-zinc-200 bg-white p-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-600">{copy.rightPanelFiles}</h2>
-        <div className="space-y-2">
+      <section className="magic-chat-panel magic-context-panel h-full min-w-0 space-y-3 overflow-y-auto overflow-x-hidden rounded-2xl border border-zinc-200 bg-white p-3">
+        <div className="magic-context-heading">
+          <span>
+            <FilePlus2 size={16} />
+          </span>
+          <div>
+            <small>{locale === "zh" ? "Grounding context" : "Grounding context"}</small>
+            <h2>{copy.rightPanelFiles}</h2>
+          </div>
+        </div>
+        <p className="magic-context-intro">
+          {locale === "zh"
+            ? "勾选资料后，AI 会把其中的解析结果作为本次对话依据。"
+            : "Select sources to ground this conversation in their extracted insights."}
+        </p>
+        <MiniTreeMap
+          nodes={chatMapNodes}
+          activeId={mapFocusId}
+          onSelect={(nodeId) => {
+            setMapFocusId(nodeId);
+            if (nodeId === "chat-root") {
+              const firstMessage = document.querySelector<HTMLElement>("[data-message-id]");
+              firstMessage?.scrollIntoView({ behavior: "smooth", block: "center" });
+              return;
+            }
+            const selected = chatMapNodes.find((node) => node.id === nodeId);
+            const messageId = conceptTerms.find(
+              (concept) => `${concept.messageId}:${concept.term}` === selected?.id
+            )?.messageId;
+            const messageElement = Array.from(
+              document.querySelectorAll<HTMLElement>("[data-message-id]")
+            ).find((element) => element.dataset.messageId === messageId);
+            messageElement?.scrollIntoView({ behavior: "smooth", block: "center" });
+          }}
+          label={locale === "zh" ? "AI 自动导航" : "AI navigation"}
+        />
+        <div className="magic-context-files space-y-2">
           {files.length === 0 ? (
-            <p className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-500">
-              {locale === "zh" ? "暂无文件，可到文件页上传后回到这里附加。" : "No files yet. Upload from Files page and attach here."}
-            </p>
+            <Link href="/files" className="magic-context-empty">
+              <FileText size={22} />
+              <strong>{locale === "zh" ? "还没有资料" : "No sources yet"}</strong>
+              <span>{locale === "zh" ? "导入文档、图片或视频" : "Import a document, image, or video"}</span>
+            </Link>
           ) : (
             files.map((file) => {
               const checked = selectedAttachments.includes(file.id);
               return (
-                <label
-                  key={file.id}
-                  className={clsx(
-                    "flex cursor-pointer items-start gap-2 rounded-xl border p-3",
-                    checked ? "border-[#202123] bg-zinc-100" : "border-zinc-200 bg-zinc-50"
-                  )}
-                >
+                <label key={file.id} className={clsx("magic-context-file", checked && "is-checked")}>
                   <input
                     type="checkbox"
                     checked={checked}
@@ -695,9 +988,12 @@ export function ChatWorkspace() {
                       }
                     }}
                   />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-zinc-800">{file.fileName}</p>
-                    <p className="text-xs text-zinc-500">{statusText(file.status)}</p>
+                  <span className="magic-file-icon">
+                    <FileText size={14} />
+                  </span>
+                  <div>
+                    <strong>{file.fileName}</strong>
+                    <small>{statusText(file.status)}</small>
                   </div>
                 </label>
               );
@@ -709,9 +1005,10 @@ export function ChatWorkspace() {
           <button
             type="button"
             onClick={() => setSelectedAttachments(readyFiles.slice(0, 2).map((item) => item.id))}
-            className="w-full rounded-full border border-zinc-300 px-3 py-1.5 text-xs font-semibold text-zinc-700 hover:bg-zinc-100"
+            className="magic-attach-recent"
           >
-            {locale === "zh" ? "附加最近文件" : "Attach recent files"}
+            <Paperclip size={13} />
+            {locale === "zh" ? "附加最近资料" : "Attach recent sources"}
           </button>
         ) : null}
       </section>

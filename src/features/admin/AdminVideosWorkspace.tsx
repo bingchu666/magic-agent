@@ -80,19 +80,28 @@ export function AdminVideosWorkspace() {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="rounded-3xl border border-black/10 bg-white/85 p-4 shadow-sm backdrop-blur">
-        <h1 className="text-xl font-semibold text-zinc-900">
-          {locale === "zh" ? "视频库管理" : "Video Library Admin"}
-        </h1>
-        <p className="mt-1 text-sm text-zinc-500">
-          {locale === "zh"
-            ? "维护外链视频、标签、难度和上下架状态。"
-            : "Manage external videos, tags, difficulty, and publish status."}
-        </p>
-      </div>
+    <div className="magic-page magic-admin-page">
+      <header className="magic-page-hero magic-admin-hero">
+        <div>
+          <span>Content operations</span>
+          <h1>{locale === "zh" ? "视频库管理" : "Video library admin"}</h1>
+          <p>
+            {locale === "zh"
+              ? "维护外链视频、标签、难度和上下架状态。"
+              : "Manage external videos, tags, difficulty, and publish status."}
+          </p>
+        </div>
+        <div className="magic-page-stat">
+          <strong>{videos.length}</strong>
+          <span>{locale === "zh" ? "全部视频" : "videos"}</span>
+        </div>
+        <div className="magic-page-stat">
+          <strong>{videos.filter((video) => video.status === "published").length}</strong>
+          <span>{locale === "zh" ? "已发布" : "published"}</span>
+        </div>
+      </header>
 
-      <form onSubmit={createVideo} className="rounded-3xl border border-black/10 bg-white/85 p-4 shadow-sm backdrop-blur">
+      <form onSubmit={createVideo} className="magic-admin-form rounded-3xl border border-black/10 bg-white/85 p-4 shadow-sm backdrop-blur">
         <div className="grid gap-3 md:grid-cols-2">
           <input
             required
@@ -154,7 +163,7 @@ export function AdminVideosWorkspace() {
 
       <div className="grid gap-3">
         {videos.map((video) => (
-          <article key={video.id} className="rounded-3xl border border-black/10 bg-white/85 p-4 shadow-sm backdrop-blur">
+          <article key={video.id} className="magic-admin-card rounded-3xl border border-black/10 bg-white/85 p-4 shadow-sm backdrop-blur">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 className="text-sm font-semibold text-zinc-900">{video.title}</h2>

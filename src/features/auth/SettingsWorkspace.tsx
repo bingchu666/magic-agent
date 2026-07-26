@@ -2,6 +2,14 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import {
+  ArrowRight,
+  Globe2,
+  LogOut,
+  ShieldAlert,
+  Sparkles,
+  UserRound,
+} from "lucide-react";
 import { useSession } from "@/features/auth/session.client";
 import { t } from "@/lib/ui/i18n";
 
@@ -33,119 +41,167 @@ export function SettingsWorkspace() {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="rounded-3xl border border-black/10 bg-white/85 p-4 shadow-sm backdrop-blur">
-        <h1 className="text-xl font-semibold text-zinc-900">{copy.settings}</h1>
-        <p className="mt-1 text-sm text-zinc-500">
-          {locale === "zh"
-            ? "管理语言偏好、会话信息和账户状态。"
-            : "Manage language preference, session info, and account state."}
-        </p>
-      </div>
-
-      <div className="rounded-3xl border border-black/10 bg-white/85 p-4 shadow-sm backdrop-blur">
-        <p className="text-sm font-semibold text-zinc-900">{copy.localeLabel}</p>
-        <div className="mt-2 flex gap-2">
-          <button
-            type="button"
-            onClick={() => setLocale("zh")}
-            className={`rounded-full px-3 py-1 text-sm ${locale === "zh" ? "bg-black text-white" : "bg-zinc-100 text-zinc-700"}`}
-          >
-            中文
-          </button>
-          <button
-            type="button"
-            onClick={() => setLocale("en")}
-            className={`rounded-full px-3 py-1 text-sm ${locale === "en" ? "bg-black text-white" : "bg-zinc-100 text-zinc-700"}`}
-          >
-            English
-          </button>
+    <div className="magic-page magic-settings-page">
+      <header className="magic-page-hero">
+        <div>
+          <span>
+            <Sparkles size={14} />
+            Personal workspace
+          </span>
+          <h1>{locale === "zh" ? "让工作台更像你" : "Make the workspace yours"}</h1>
+          <p>
+            {locale === "zh"
+              ? "管理语言、身份和账户边界。你的知识地图与资料不会受视觉偏好影响。"
+              : "Manage language, identity, and account boundaries without affecting your knowledge maps."}
+          </p>
         </div>
-      </div>
+        <div className="magic-page-stat">
+          <strong>{locale === "zh" ? "中文" : "EN"}</strong>
+          <span>{copy.localeLabel}</span>
+        </div>
+        <div className="magic-page-stat">
+          <strong>{user?.role ?? "user"}</strong>
+          <span>{locale === "zh" ? "账户角色" : "account role"}</span>
+        </div>
+      </header>
 
-      <div className="rounded-3xl border border-black/10 bg-white/85 p-4 shadow-sm backdrop-blur">
-        <p className="text-sm font-semibold text-zinc-900">
-          {locale === "zh" ? "账户信息" : "Account"}
-        </p>
-        <p className="mt-1 text-sm text-zinc-700">
-          {locale === "zh" ? "邮箱" : "Email"}: {user?.id ? "已绑定" : "—"}
-        </p>
-        <p className="text-sm text-zinc-700">
-          {locale === "zh" ? "昵称" : "Name"}: {user?.name}
-        </p>
-        <p className="text-sm text-zinc-700">
-          {locale === "zh" ? "角色" : "Role"}: {user?.role}
-        </p>
-      </div>
+      <div className="magic-settings-grid">
+        <section className="magic-settings-card magic-settings-profile">
+          <header>
+            <span>
+              <UserRound size={18} />
+            </span>
+            <div>
+              <small>{locale === "zh" ? "Identity" : "Identity"}</small>
+              <h2>{locale === "zh" ? "账户信息" : "Account profile"}</h2>
+            </div>
+          </header>
+          <div className="magic-account-profile">
+            <div>{(user?.name ?? "G").slice(0, 1).toUpperCase()}</div>
+            <span>
+              <strong>{user?.name ?? "Guest"}</strong>
+              <small>{user?.role ?? "user"} · {user?.id ? (locale === "zh" ? "邮箱已绑定" : "Email connected") : "—"}</small>
+            </span>
+          </div>
+          <p>
+            {locale === "zh"
+              ? "身份信息用于跨设备同步对话、资料与知识锚点。"
+              : "Your identity keeps conversations, sources, and anchors connected across sessions."}
+          </p>
+        </section>
 
-      {/* Sign Out */}
-      <div className="rounded-3xl border border-black/10 bg-white/85 p-4 shadow-sm backdrop-blur">
-        <p className="text-sm font-semibold text-zinc-900">
-          {locale === "zh" ? "退出登录" : "Sign Out"}
-        </p>
-        <p className="mt-1 text-xs text-zinc-500">
-          {locale === "zh"
-            ? "退出后需要重新登录才能访问。"
-            : "You will need to sign in again to access the app."}
-        </p>
-        <button
-          type="button"
-          onClick={() => signOut().then(() => router.replace("/auth"))}
-          className="mt-3 rounded-xl bg-zinc-900 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-700 transition"
-        >
-          {locale === "zh" ? "退出登录" : "Sign Out"}
-        </button>
-      </div>
-
-      {/* Delete Account */}
-      <div className="rounded-3xl border border-rose-200 bg-rose-50/60 p-4 shadow-sm backdrop-blur">
-        <p className="text-sm font-semibold text-rose-800">
-          {locale === "zh" ? "注销账号" : "Delete Account"}
-        </p>
-        <p className="mt-1 text-xs text-rose-600">
-          {locale === "zh"
-            ? "此操作不可撤销，将永久删除你的所有数据、对话和文件。"
-            : "This action is irreversible. All your data, conversations, and files will be permanently deleted."}
-        </p>
-
-        {deleteState === "loading" ? (
-          <button
-            type="button"
-            disabled
-            className="mt-3 rounded-xl bg-rose-400 px-4 py-2 text-sm font-semibold text-white cursor-wait transition"
-          >
-            {locale === "zh" ? "注销中…" : "Deleting..."}
-          </button>
-        ) : deleteState === "confirm" ? (
-          <div className="mt-3 flex gap-2">
+        <section className="magic-settings-card">
+          <header>
+            <span>
+              <Globe2 size={18} />
+            </span>
+            <div>
+              <small>Language</small>
+              <h2>{copy.localeLabel}</h2>
+            </div>
+          </header>
+          <p>
+            {locale === "zh"
+              ? "界面和 AI 默认回答将优先使用所选语言。"
+              : "The interface and AI replies will prefer your selected language."}
+          </p>
+          <div className="magic-language-options">
             <button
               type="button"
-              onClick={handleDeleteAccount}
-              className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700 transition"
+              onClick={() => setLocale("zh")}
+              className={locale === "zh" ? "is-active" : ""}
             >
-              {locale === "zh" ? "确认注销" : "Confirm Delete"}
+              <span>中</span>
+              <div>
+                <strong>中文</strong>
+                <small>Chinese</small>
+              </div>
+              {locale === "zh" ? <i /> : null}
             </button>
             <button
               type="button"
-              onClick={() => { setDeleteState("idle"); setDeleteError(null); }}
-              className="rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm font-semibold text-zinc-700 hover:bg-zinc-50 transition"
+              onClick={() => setLocale("en")}
+              className={locale === "en" ? "is-active" : ""}
             >
-              {locale === "zh" ? "取消" : "Cancel"}
+              <span>EN</span>
+              <div>
+                <strong>English</strong>
+                <small>English</small>
+              </div>
+              {locale === "en" ? <i /> : null}
             </button>
           </div>
-        ) : (
+        </section>
+
+        <section className="magic-settings-card">
+          <header>
+            <span>
+              <LogOut size={18} />
+            </span>
+            <div>
+              <small>Session</small>
+              <h2>{locale === "zh" ? "结束本次会话" : "End this session"}</h2>
+            </div>
+          </header>
+          <p>
+            {locale === "zh"
+              ? "本设备会退出登录，云端数据仍会安全保留。"
+              : "This device will sign out while cloud data remains intact."}
+          </p>
           <button
             type="button"
-            onClick={() => setDeleteState("confirm")}
-            className="mt-3 rounded-xl border border-rose-300 bg-white px-4 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100 transition"
+            className="magic-settings-action"
+            onClick={() => signOut().then(() => router.replace("/auth"))}
           >
-            {locale === "zh" ? "注销账号" : "Delete Account"}
+            {locale === "zh" ? "退出登录" : "Sign out"}
+            <ArrowRight size={15} />
           </button>
-        )}
+        </section>
 
-        {deleteError && (
-          <p className="mt-2 text-xs text-rose-700">{deleteError}</p>
-        )}
+        <section className="magic-settings-card is-danger">
+          <header>
+            <span>
+              <ShieldAlert size={18} />
+            </span>
+            <div>
+              <small>Danger zone</small>
+              <h2>{locale === "zh" ? "注销账号" : "Delete account"}</h2>
+            </div>
+          </header>
+          <p>
+            {locale === "zh"
+              ? "永久删除账号、对话、资料和所有个人数据。此操作无法撤销。"
+              : "Permanently delete your account, conversations, sources, and personal data."}
+          </p>
+
+          {deleteState === "loading" ? (
+            <button type="button" className="magic-danger-action" disabled>
+              {locale === "zh" ? "注销中…" : "Deleting…"}
+            </button>
+          ) : deleteState === "confirm" ? (
+            <div className="magic-confirm-actions">
+              <button type="button" className="magic-danger-action" onClick={handleDeleteAccount}>
+                {locale === "zh" ? "确认永久删除" : "Confirm permanent delete"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setDeleteState("idle");
+                  setDeleteError(null);
+                }}
+              >
+                {locale === "zh" ? "取消" : "Cancel"}
+              </button>
+            </div>
+          ) : (
+            <button type="button" className="magic-settings-action" onClick={() => setDeleteState("confirm")}>
+              {locale === "zh" ? "注销账号" : "Delete account"}
+              <ArrowRight size={15} />
+            </button>
+          )}
+
+          {deleteError ? <p className="magic-form-notice is-error">{deleteError}</p> : null}
+        </section>
       </div>
     </div>
   );
