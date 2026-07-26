@@ -1,6 +1,7 @@
 import { jsonError, jsonOk } from "@/lib/ui/api";
 import { assertSession } from "@/features/auth/session.server";
 import { supabaseDb } from "@/lib/data/supabase-db";
+import { naiveTitleFallback } from "@/lib/ai/model-gateway";
 
 export async function GET(req: Request) {
   try {
@@ -16,21 +17,30 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const session = await assertSession(req);
-    let body: { title?: string; parentThreadId?: string; sourceTerm?: string } = {};
+    let body: { title?: string; rawQuestion?: string; parentThreadId?: string; sourceTerm?: string } = {};
     try {
       body = (await req.json()) as {
         title?: string;
+        rawQuestion?: string;
         parentThreadId?: string;
         sourceTerm?: string;
       };
     } catch {
       body = {};
     }
-    const title = typeof body?.title === "string" && body.title.trim().length > 0
-      ? body.title.trim()
-      : session.locale === "zh"
-      ? "新对话"
-      : "New Thread";
+
+    // When the caller supplies the raw (possibly long) question, use an
+    // immediate truncated placeholder so thread/card creation never waits on
+    // a model call; the first chat turn on this thread upgrades it to a
+    // short AI-generated title in the background (see runAgentOrchestration).
+    // An explicit `title` (already short/meaningful, e.g. a branch's source
+    // term) is used as-is and skips that upgrade entirely.
+    const rawQuestion = typeof body.rawQuestion === "string" ? body.rawQuestion.trim() : "";
+    const explicitTitle = typeof body.title === "string" ? body.title.trim() : "";
+    const titlePending = Boolean(rawQuestion);
+    const title = rawQuestion
+      ? naiveTitleFallback(rawQuestion, session.locale)
+      : explicitTitle || (session.locale === "zh" ? "新对话" : "New Thread");
 
     const parentThreadId =
       typeof body.parentThreadId === "string" && body.parentThreadId.trim()
@@ -47,7 +57,7 @@ export async function POST(req: Request) {
       }
     }
 
-    const created = await supabaseDb.createThread(session.id, title);
+    const created = await supabaseDb.createThread(session.id, title, { titlePending });
     const thread = {
       ...created,
       parentThreadId,

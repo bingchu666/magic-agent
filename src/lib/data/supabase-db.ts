@@ -196,13 +196,18 @@ export const supabaseDb = {
     return fromDatabaseRow<Thread>(data);
   },
 
-  async createThread(userId: string, title: string): Promise<Thread> {
+  async createThread(
+    userId: string,
+    title: string,
+    options?: { titlePending?: boolean }
+  ): Promise<Thread> {
     const supabase = await sc();
     const now = nowIso();
     const thread: Thread = {
       id: createId("thread"),
       userId,
       title,
+      titlePending: Boolean(options?.titlePending),
       createdAt: now,
       updatedAt: now,
     };
@@ -215,6 +220,17 @@ export const supabaseDb = {
     const supabase = await sc();
     const { error } = await supabase.from("threads").update({ updated_at: nowIso() }).eq("id", threadId);
     assertNoError(error, "Failed to update thread");
+  },
+
+  // Applies the background-generated short title once it's ready, replacing
+  // the immediate truncated placeholder set at creation time.
+  async updateThreadTitle(threadId: string, title: string): Promise<void> {
+    const supabase = await sc();
+    const { error } = await supabase
+      .from("threads")
+      .update({ title, title_pending: false })
+      .eq("id", threadId);
+    assertNoError(error, "Failed to update thread title");
   },
 
   async deleteThread(threadId: string, userId?: string): Promise<Thread | null> {

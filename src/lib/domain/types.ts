@@ -13,6 +13,9 @@ export type Thread = {
   id: string;
   userId: string;
   title: string;
+  // True while `title` is still the immediate truncated placeholder set at
+  // creation time and a short AI-generated title upgrade is still pending.
+  titlePending?: boolean;
   parentThreadId?: string | null;
   sourceTerm?: string | null;
   createdAt: string;
@@ -236,7 +239,7 @@ export type ChatSsePayloadMap = {
   token: { text: string };
   cards: LessonPayload;
   video_recommendations: { items: VideoRecommendation[] };
-  thread: { threadId: string; messageId: string };
+  thread: { threadId: string; messageId: string; title: string };
   done: {
     messageId: string;
     provider: AgentOutput["provider"];

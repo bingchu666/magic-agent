@@ -1,4 +1,4 @@
-import { generateWithGateway, generateWithGatewayStream } from "@/lib/ai/model-gateway";
+import { generateShortTitle, generateWithGateway, generateWithGatewayStream, naiveTitleFallback } from "@/lib/ai/model-gateway";
 import { buildContext } from "@/lib/agent/context";
 import { detectIntent } from "@/lib/agent/intent";
 import { supabaseDb } from "@/lib/data/supabase-db";
@@ -8,7 +8,7 @@ import { ensureConceptAnnotations } from "@/lib/agent/concept-annotations";
 
 type OrchestratorInput = ChatStreamRequest & {
   userId: string;
-  onThreadReady?: (threadId: string) => void;
+  onThreadReady?: (threadId: string, title: string) => void;
   onModelToken?: (text: string) => void;
   signal?: AbortSignal;
 };
@@ -46,13 +46,6 @@ function normalizeResponseText(input: string) {
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-}
-
-function summarizeThreadTitle(message: string, locale: Locale) {
-  const plain = message.replace(/\s+/g, " ").trim();
-  if (!plain) return locale === "zh" ? "新对话" : "New Thread";
-  const snippet = plain.slice(0, 28);
-  return plain.length > 28 ? `${snippet}...` : snippet;
 }
 
 function extractLatestAssistantFromHistory(history: ChatHistoryMessage[] | undefined) {
@@ -99,6 +92,7 @@ function isExplicitFollowUp(message: string) {
 
 export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
   threadId: string;
+  threadTitle: string;
   userMessage: Message;
   assistantMessage: Message;
   output: AgentOutput;
@@ -111,17 +105,38 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
   const requestedThread = input.threadId
     ? await supabaseDb.getThread(input.threadId)
     : null;
+  // Thread creation must never wait on the AI title call: use an immediate
+  // truncated placeholder so the card/conversation is ready right away, and
+  // upgrade it to a short AI-generated title in the background below (in
+  // parallel with generation), once `titlePending` marks it as needed.
   const thread = requestedThread?.userId === input.userId
     ? requestedThread
     : await supabaseDb.createThread(
       input.userId,
-      summarizeThreadTitle(input.userMessage, locale)
+      naiveTitleFallback(input.userMessage, locale),
+      { titlePending: true }
     );
 
   if (!thread) {
     throw new Error("Failed to initialize thread");
   }
-  if (input.onThreadReady) input.onThreadReady(thread.id);
+  if (input.onThreadReady) input.onThreadReady(thread.id, thread.title);
+
+  const titleUpgradePromise: Promise<void> = thread.titlePending
+    ? generateShortTitle({ userMessage: input.userMessage, locale })
+        .then(async (generatedTitle) => {
+          const finalTitle = generatedTitle || thread.title;
+          await supabaseDb.updateThreadTitle(thread.id, finalTitle);
+          thread.title = finalTitle;
+          thread.titlePending = false;
+          if (input.onThreadReady) input.onThreadReady(thread.id, finalTitle);
+        })
+        .catch((error) => {
+          // The placeholder title already stands as the final title — a
+          // failed upgrade is a non-issue, not a broken experience.
+          console.warn("Short title upgrade failed; keeping placeholder title", error);
+        })
+    : Promise.resolve();
 
   const intent = detectIntent(input.userMessage);
   const safety = { mode: "allow" as const };
@@ -190,6 +205,7 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
   const [generation, userMessage] = await Promise.all([
     generationPromise,
     userMessagePromise,
+    titleUpgradePromise,
   ]);
 
   const normalizedText = normalizeResponseText(generation.text);
@@ -234,6 +250,7 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
 
   return {
     threadId: thread.id,
+    threadTitle: thread.title,
     userMessage,
     assistantMessage,
     output,

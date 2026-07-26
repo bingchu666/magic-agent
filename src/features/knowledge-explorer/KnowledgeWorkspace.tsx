@@ -464,25 +464,31 @@ export function KnowledgeWorkspace() {
     setActiveCardId(cardId);
   };
 
+  // `titleInput` is either the raw (untruncated) question — given an
+  // immediate truncated placeholder title, then upgraded to a short
+  // AI-generated title in the background once `askCard` starts the first
+  // turn on this thread (see the `thread` SSE handler below) — or an
+  // already-short explicit title (e.g. a branch's source term), which skips
+  // that upgrade entirely.
   const createServerThread = async (
-    title: string,
+    titleInput: { rawQuestion: string } | { title: string },
     parentThreadId?: string,
     sourceTerm?: string
   ) => {
     const data = await apiJson<{ item: Thread }>("/api/threads", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, parentThreadId, sourceTerm }),
+      body: JSON.stringify({ ...titleInput, parentThreadId, sourceTerm }),
     });
     return data.item;
   };
 
   const ensureThreadForCard = async (card: KnowledgeCard) => {
     if (card.threadId) return card.threadId;
-    const thread = await createServerThread(card.title);
+    const thread = await createServerThread({ rawQuestion: card.question || card.title });
     commitCards((previous) =>
       previous.map((item) =>
-        item.id === card.id ? { ...item, threadId: thread.id } : item
+        item.id === card.id ? { ...item, threadId: thread.id, title: thread.title } : item
       )
     );
     return thread.id;
@@ -553,10 +559,10 @@ export function KnowledgeWorkspace() {
 
       let streamError = "";
       await consumeSseStream(response, {
-        thread: ({ threadId }) => {
+        thread: ({ threadId, title }) => {
           commitCards((previous) =>
             previous.map((item) =>
-              item.id === cardId ? { ...item, threadId } : item
+              item.id === cardId ? { ...item, threadId, title: title || item.title } : item
             )
           );
         },
@@ -684,13 +690,13 @@ export function KnowledgeWorkspace() {
     setCreatingCard(true);
     setSpawnError("");
     try {
-      const thread = await createServerThread(cleanTitle(question));
+      const thread = await createServerThread({ rawQuestion: question });
       const root: KnowledgeCard = {
         id: createId("knowledge_root"),
         threadId: thread.id,
         parentId: null,
         relation: "root",
-        title: cleanTitle(question),
+        title: thread.title,
         question,
         messages: [],
         status: "idle",
@@ -721,8 +727,14 @@ export function KnowledgeWorkspace() {
     setSpawnError("");
     try {
       const parentThreadId = await ensureThreadForCard(parent);
+      // A source term is already short and meaningful (e.g. a concept the
+      // user drilled into) — use it as the title as-is and skip the extra
+      // model call; otherwise summarize the raw question server-side.
+      const titleInput = spawnDraft.sourceTerm
+        ? { title: cleanTitle(spawnDraft.sourceTerm) }
+        : { rawQuestion: question };
       const thread = await createServerThread(
-        cleanTitle(spawnDraft.sourceTerm || question),
+        titleInput,
         parentThreadId,
         spawnDraft.sourceTerm || cleanTitle(question)
       );
@@ -731,7 +743,7 @@ export function KnowledgeWorkspace() {
         threadId: thread.id,
         parentId: parent.id,
         relation: spawnDraft.relation,
-        title: cleanTitle(spawnDraft.sourceTerm || question),
+        title: thread.title,
         question,
         messages: [],
         status: "idle",
@@ -878,7 +890,7 @@ export function KnowledgeWorkspace() {
                     {depth > 0 ? (
                       <small>{relationMeta[card.relation].label.split(" · ")[0]}</small>
                     ) : null}
-                    {card.title}
+                    <span className="knowledge-stage-project-title-text">{card.title}</span>
                   </strong>
                   {card.unread ? <i /> : null}
                 </button>

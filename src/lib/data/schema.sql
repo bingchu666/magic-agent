@@ -21,6 +21,7 @@ CREATE TABLE threads (
   id TEXT PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE RESTRICT,
   title TEXT NOT NULL,
+  title_pending BOOLEAN NOT NULL DEFAULT false,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

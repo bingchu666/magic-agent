@@ -84,11 +84,15 @@ export async function POST(req: Request) {
             responseMode: body.responseMode === "annotated" ? "annotated" : "plain",
             userId: session.id,
             signal: abortController.signal,
-            onThreadReady: (threadId) => {
+            onThreadReady: (threadId, title) => {
+              // Called once immediately with the placeholder title, and again
+              // later (same thread, same still-open stream) if the
+              // background short-title upgrade completes in time — write
+              // every call so the client picks up the upgraded title.
               threadIdFromCallback = threadId;
-              if (threadEventSent) return;
               write("thread", {
                 threadId,
+                title,
                 messageId: "pending",
               });
               threadEventSent = true;
@@ -109,6 +113,7 @@ export async function POST(req: Request) {
           if (!threadEventSent) {
             write("thread", {
               threadId: threadIdFromCallback || result.threadId,
+              title: result.threadTitle,
               messageId: result.assistantMessage.id,
             });
             threadEventSent = true;

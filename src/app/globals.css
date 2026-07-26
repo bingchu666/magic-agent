@@ -59,6 +59,21 @@ a {
 
 /* ── Shared product shell ──────────────────────────────────────────────── */
 
+/* Reusable in place of a hard ellipsis truncation: keeps the full title
+   reachable by scrolling/dragging horizontally on hover instead of cutting
+   it off, for titles that don't fit their container. */
+.magic-scroll-title {
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.magic-scroll-title::-webkit-scrollbar {
+  display: none;
+}
+
 .magic-app-surface {
   position: relative;
   isolation: isolate;
@@ -5150,11 +5165,24 @@ a {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  overflow: hidden;
   font-size: 11px;
   font-weight: inherit;
-  text-overflow: ellipsis;
+}
+
+/* Scrolls horizontally instead of being cut off when a (rare) long AI-generated
+   title still doesn't fit — scrollbar hidden for a clean look, but the text
+   remains reachable by hovering and scrolling/dragging. */
+.knowledge-stage-project-title-text {
+  display: block;
+  overflow-x: auto;
+  overflow-y: hidden;
   white-space: nowrap;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.knowledge-stage-project-title-text::-webkit-scrollbar {
+  display: none;
 }
 
 .knowledge-stage-project-select > strong small {
@@ -5633,7 +5661,8 @@ a {
 
 .knowledge-stage-card-header h1 {
   margin: 7px 0 0;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   color: var(--stage-ink);
   font-family:
     "SF Pro Display", Inter, -apple-system, BlinkMacSystemFont, "PingFang SC",
@@ -5641,8 +5670,15 @@ a {
   font-size: clamp(22px, 2vw, 30px);
   font-weight: 720;
   letter-spacing: -0.035em;
-  text-overflow: ellipsis;
   white-space: nowrap;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+/* A long AI-generated title scrolls horizontally on hover/drag instead of
+   being cut off — scrollbar hidden for a clean look. */
+.knowledge-stage-card-header h1::-webkit-scrollbar {
+  display: none;
 }
 
 .knowledge-stage-card-tools {

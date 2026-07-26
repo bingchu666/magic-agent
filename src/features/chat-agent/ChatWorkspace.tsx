@@ -178,7 +178,14 @@ export function ChatWorkspace() {
     setFiles(data.items);
   };
 
-  const reconcileThreadId = (localThreadId: string, serverThreadId: string) => {
+  const applyThreadTitle = (threadId: string, title: string) => {
+    if (!title) return;
+    setThreads((prev) =>
+      prev.map((thread) => (thread.id === threadId ? { ...thread, title } : thread))
+    );
+  };
+
+  const reconcileThreadId = (localThreadId: string, serverThreadId: string, title?: string) => {
     if (!localThreadId || !serverThreadId || localThreadId === serverThreadId) return;
 
     const previous = threadStoreRef.current[localThreadId];
@@ -206,10 +213,15 @@ export function ChatWorkspace() {
       const hasServer = withoutLocal.some((thread) => thread.id === serverThreadId);
       if (hasServer) {
         return withoutLocal.map((thread) =>
-          thread.id === serverThreadId ? { ...thread, updatedAt: now } : thread
+          thread.id === serverThreadId
+            ? { ...thread, updatedAt: now, title: title || thread.title }
+            : thread
         );
       }
-      return [{ ...from, id: serverThreadId, updatedAt: now }, ...withoutLocal];
+      return [
+        { ...from, id: serverThreadId, updatedAt: now, title: title || from.title },
+        ...withoutLocal,
+      ];
     });
 
     if (activeThreadRef.current === localThreadId) {
@@ -431,8 +443,12 @@ export function ChatWorkspace() {
         thread: (payload) => {
           if (!threadId) return;
           if (payload.threadId && payload.threadId !== threadId) {
-            reconcileThreadId(threadId, payload.threadId);
+            reconcileThreadId(threadId, payload.threadId, payload.title);
             threadId = payload.threadId;
+          } else if (payload.title) {
+            // Same thread as already known — this is the async title-upgrade
+            // event arriving after the initial (truncated) placeholder title.
+            applyThreadTitle(threadId, payload.title);
           }
         },
         token: (payload) => {
@@ -701,7 +717,7 @@ export function ChatWorkspace() {
                   onClick={() => setActiveThreadId(thread.id)}
                   className="min-w-0 flex-1 text-left"
                 >
-                  <p className="truncate text-sm font-semibold">{thread.title}</p>
+                  <p className="magic-scroll-title text-sm font-semibold">{thread.title}</p>
                   <p className="mt-1 text-xs">
                     {new Date(thread.updatedAt).toLocaleString()}
                   </p>

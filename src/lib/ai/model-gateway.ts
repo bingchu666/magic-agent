@@ -28,6 +28,8 @@ const HISTORY_CLIP_CHARS = Number(process.env.MODEL_HISTORY_CHARS || 16000);
 const HISTORY_MAX_TURNS = Number(process.env.MODEL_HISTORY_TURNS || 20);
 const HISTORY_TURN_MAX_CHARS = Number(process.env.MODEL_HISTORY_TURN_CHARS || 3000);
 const ENABLE_OPENAI_FALLBACK = process.env.OPENAI_FALLBACK_ENABLED === "true";
+const TITLE_TIMEOUT_MS = Number(process.env.TITLE_MODEL_TIMEOUT_MS || 6000);
+const TITLE_MAX_TOKENS = 32;
 const configuredGroundedGuardChars = Number(process.env.GROUNDED_STREAM_GUARD_CHARS);
 const GROUNDED_STREAM_GUARD_CHARS = Number.isFinite(configuredGroundedGuardChars)
   ? Math.max(32, configuredGroundedGuardChars)
@@ -635,4 +637,82 @@ export async function generateWithGatewayStream(
     text: fallbackText,
     provider: "rule",
   };
+}
+
+export function naiveTitleFallback(message: string, locale: Locale) {
+  const plain = message.replace(/\s+/g, " ").trim();
+  if (!plain) return locale === "zh" ? "新对话" : "New Thread";
+  const snippet = plain.slice(0, 20);
+  return plain.length > 20 ? `${snippet}…` : snippet;
+}
+
+function cleanGeneratedTitle(raw: string) {
+  return raw
+    .trim()
+    .replace(/^["'“”‘’]+|["'“”‘’]+$/g, "")
+    .replace(/[。.!！]+$/, "")
+    .trim();
+}
+
+/**
+ * Summarizes a user's request into a short thread/card title (~15-20 chars).
+ * Called in the background, in parallel with the first turn's generation, to
+ * upgrade the immediate truncated placeholder title (see naiveTitleFallback)
+ * set at thread-creation time — never on the creation request's critical
+ * path. Deliberately lightweight: a single non-streaming call with a short
+ * system prompt, a tiny token budget, and its own short timeout; any failure
+ * or slow response just leaves the placeholder title in place.
+ */
+export async function generateShortTitle(input: { userMessage: string; locale: Locale }): Promise<string> {
+  const message = input.userMessage.trim();
+  if (!message) return input.locale === "zh" ? "新对话" : "New Thread";
+
+  const useDeepSeek = Boolean(process.env.DEEPSEEK_API_KEY);
+  const useOpenAiFallback = !useDeepSeek && ENABLE_OPENAI_FALLBACK && Boolean(process.env.OPENAI_API_KEY);
+  if (!useDeepSeek && !useOpenAiFallback) {
+    return naiveTitleFallback(message, input.locale);
+  }
+
+  const client = useDeepSeek
+    ? new OpenAI({
+        apiKey: process.env.DEEPSEEK_API_KEY,
+        baseURL: process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com",
+      })
+    : new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+  // Prefer a project-configured lightweight title model when set; otherwise
+  // just reuse whichever chat model is already configured for this provider.
+  const model =
+    process.env.TITLE_MODEL?.trim() ||
+    (useDeepSeek
+      ? parseModels(process.env.DEEPSEEK_MODEL, ["deepseek-chat"])[0]
+      : parseModels(process.env.OPENAI_MODEL, ["gpt-4o-mini", "gpt-4.1-mini"])[0]);
+
+  try {
+    const completion = await withTimeout(
+      client.chat.completions.create({
+        model,
+        messages: [
+          {
+            role: "system",
+            content:
+              input.locale === "zh"
+                ? "你负责为用户的一次提问生成简短标题。只输出标题本身，不要加引号、不要句末标点、不要任何解释或前后缀。标题需控制在 20 个汉字以内，提炼这次提问的核心内容。"
+                : "You write a short title summarizing the user's request below. Output only the title text — no quotes, no trailing punctuation, no explanation. Keep it under 10 words and capture the core of the request.",
+          },
+          { role: "user", content: message.slice(0, 2000) },
+        ],
+        temperature: 0.3,
+        max_tokens: TITLE_MAX_TOKENS,
+      }),
+      TITLE_TIMEOUT_MS
+    );
+
+    const raw = completion.choices?.[0]?.message?.content || "";
+    const title = cleanGeneratedTitle(raw);
+    return title || naiveTitleFallback(message, input.locale);
+  } catch (error) {
+    console.warn("Short title generation failed; falling back to truncation", error);
+    return naiveTitleFallback(message, input.locale);
+  }
 }
