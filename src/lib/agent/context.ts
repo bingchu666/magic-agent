@@ -2,6 +2,7 @@ import { ChatHistoryMessage, Locale } from "@/lib/domain/types";
 import { supabaseDb } from "@/lib/data/supabase-db";
 import { stripMarkdown } from "@/lib/domain/utils";
 import { retrieveOptionalKnowledge } from "@/lib/agent/knowledge-retrieval";
+import { resolveRetrievalQuery } from "@/lib/agent/retrievalQuery";
 
 const OPTIONAL_CONTEXT_TIMEOUT_MS = 800;
 
@@ -47,25 +48,20 @@ export async function buildContext(params: {
     clientHistory = [],
   } = params;
   console.time("buildContext");
-  const [storedMessages, explicitInsights, retrievedKnowledge] =
-    await Promise.all([
-      clientHistory.length > 0
-        ? Promise.resolve([])
-        : loadOptionalContext(
-            "stored conversation history",
-            supabaseDb.listMessages(threadId),
-            []
-          ),
-      loadOptionalContext(
-        "attached file insights",
-        supabaseDb.listFileInsightsByIds(userId, attachmentIds),
-        []
-      ),
-      retrieveOptionalKnowledge({
-        query: userMessage,
-        search: (query) => supabaseDb.searchTrickChunks(query),
-      }),
-    ]);
+  const [storedMessages, explicitInsights] = await Promise.all([
+    clientHistory.length > 0
+      ? Promise.resolve([])
+      : loadOptionalContext(
+          "stored conversation history",
+          supabaseDb.listMessages(threadId),
+          []
+        ),
+    loadOptionalContext(
+      "attached file insights",
+      supabaseDb.listFileInsightsByIds(userId, attachmentIds),
+      []
+    ),
+  ]);
   const messages = storedMessages.slice(-16);
 
   const uniqueInsights = explicitInsights.filter(
@@ -80,6 +76,16 @@ export async function buildContext(params: {
           role: message.role as "user" | "assistant",
           content: stripMarkdown(message.content),
         }));
+
+  // Retrieval needs `history` to decide its query (see resolveRetrievalQuery),
+  // so it runs after the history/insights load rather than alongside it.
+  const retrievalQuery = resolveRetrievalQuery(userMessage, history);
+  const retrievedKnowledge = retrievalQuery
+    ? await retrieveOptionalKnowledge({
+        query: retrievalQuery,
+        search: (query) => supabaseDb.searchTrickChunks(query),
+      })
+    : "";
 
   const fileContext = uniqueInsights
     .map((insight) => `${insight.kind}: ${insight.content}`)

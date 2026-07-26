@@ -59,6 +59,11 @@ function normalizeTerm(term: string) {
   return term.toLowerCase().replace(/[^a-z0-9 -]/g, "").trim();
 }
 
+/** Whether the text names a concrete magic prop/effect (card, coin, vanish, ...). */
+export function containsDomainKeyword(text: string): boolean {
+  return DOMAIN_TERMS.some((concept) => concept.pattern.test(text));
+}
+
 export function buildTrickKeywordPlan(query: string) {
   const terms = new Set<string>();
   const lower = query.toLowerCase();
