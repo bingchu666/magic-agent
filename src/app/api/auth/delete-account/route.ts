@@ -57,6 +57,7 @@ export async function POST(req: Request) {
       await adminClient.from("video_embeddings").delete().in("video_id", videoIds).throwOnError();
       await adminClient.from("video_assets").delete().in("id", videoIds).throwOnError();
     }
+    await adminClient.from("user_onboarding").delete().eq("user_id", userId).throwOnError();
     await adminClient.from("events").delete().eq("user_id", userId).throwOnError();
     await adminClient.from("audit_logs").delete().eq("user_id", userId).throwOnError();
     await adminClient.from("file_insights").delete().eq("user_id", userId).throwOnError();

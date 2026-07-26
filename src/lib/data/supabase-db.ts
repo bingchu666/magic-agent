@@ -10,6 +10,7 @@ import {
   Message,
   Thread,
   ThreadLearningState,
+  UserOnboarding,
   UserRole,
   VideoAsset,
   VideoDifficulty,
@@ -891,5 +892,45 @@ export const supabaseDb = {
     }
 
     return searchTricksByKeyword(queryText, matchCount);
+  },
+
+  // ── Onboarding ──────────────────────────────────────────
+
+  async getUserOnboarding(userId: string): Promise<UserOnboarding | null> {
+    const supabase = await sc();
+    const { data, error } = await supabase
+      .from("user_onboarding")
+      .select("*")
+      .eq("user_id", userId)
+      .maybeSingle();
+    assertNoError(error, "Failed to load onboarding");
+    return fromDatabaseRow<UserOnboarding>(data);
+  },
+
+  async saveUserOnboardingProgress(
+    userId: string,
+    patch: { answers: Record<string, string | string[]>; complete?: boolean; incrementSkip?: boolean }
+  ): Promise<UserOnboarding> {
+    const supabase = await sc();
+    const existing = await supabaseDb.getUserOnboarding(userId);
+    const next: UserOnboarding = {
+      userId,
+      answers: { ...(existing?.answers ?? {}), ...patch.answers },
+      completedAt: patch.complete ? nowIso() : existing?.completedAt ?? null,
+      skipCount: (existing?.skipCount ?? 0) + (patch.incrementSkip ? 1 : 0),
+      updatedAt: nowIso(),
+    };
+
+    if (existing) {
+      const { error } = await supabase
+        .from("user_onboarding")
+        .update(toDatabaseRow(next))
+        .eq("user_id", userId);
+      assertNoError(error, "Failed to update onboarding");
+    } else {
+      const { error } = await supabase.from("user_onboarding").insert(toDatabaseRow(next));
+      assertNoError(error, "Failed to create onboarding");
+    }
+    return next;
   },
 };

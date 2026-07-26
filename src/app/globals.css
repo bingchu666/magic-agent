@@ -1002,6 +1002,189 @@ a {
   color: var(--magic-forest);
 }
 
+/* ── Onboarding survey ─────────────────────────────────────────────────── */
+
+.magic-onboarding-backdrop {
+  position: fixed;
+  z-index: 90;
+  display: grid;
+  inset: 0;
+  place-items: center;
+  padding: 20px;
+  background: rgba(24, 32, 27, 0.45);
+  backdrop-filter: blur(6px);
+}
+
+.magic-onboarding-modal {
+  width: min(460px, 100%);
+  padding: 28px;
+  border: 1px solid var(--magic-line);
+  border-radius: 22px;
+  color: var(--magic-ink);
+  background: var(--magic-card);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.24);
+  animation: magic-form-enter 420ms cubic-bezier(0.2, 0.75, 0.2, 1) both;
+}
+
+.magic-onboarding-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.magic-onboarding-eyebrow {
+  margin: 0;
+  color: var(--magic-muted);
+  font-size: 9px;
+  font-weight: 760;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.magic-onboarding-close {
+  display: grid;
+  place-items: center;
+  padding: 5px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--magic-muted);
+  background: transparent;
+  cursor: pointer;
+  transition: color 160ms ease;
+}
+
+.magic-onboarding-close:hover {
+  color: var(--magic-ink);
+}
+
+.magic-onboarding-close:disabled {
+  cursor: wait;
+  opacity: 0.4;
+}
+
+.magic-onboarding-track {
+  display: flex;
+  gap: 4px;
+  margin-top: 16px;
+}
+
+.magic-onboarding-track i {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--magic-line);
+  font-style: normal;
+}
+
+.magic-onboarding-track i.is-done {
+  background: var(--magic-green);
+}
+
+.magic-onboarding-modal h2 {
+  margin: 18px 0 0;
+  font-family: var(--magic-display);
+  font-size: clamp(19px, 2.6vw, 23px);
+  font-weight: 560;
+  letter-spacing: -0.02em;
+  line-height: 1.4;
+}
+
+.magic-onboarding-options {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.magic-onboarding-modal .magic-form-notice {
+  margin-top: 14px;
+}
+
+.magic-onboarding-option {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--magic-line);
+  border-radius: 13px;
+  color: var(--magic-ink);
+  background: var(--magic-card);
+  font-family: var(--magic-sans);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: 160ms ease;
+}
+
+.magic-onboarding-option:hover {
+  border-color: rgba(49, 93, 69, 0.3);
+  background: var(--magic-soft);
+}
+
+.magic-onboarding-option.is-selected {
+  border-color: var(--magic-ink);
+  color: #f0f7f2;
+  background: var(--magic-ink);
+}
+
+.magic-onboarding-option:disabled {
+  cursor: wait;
+  opacity: 0.5;
+}
+
+.magic-onboarding-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 22px;
+}
+
+.magic-onboarding-skip {
+  padding: 0;
+  border: 0;
+  color: var(--magic-muted);
+  background: transparent;
+  font-size: 10px;
+  font-weight: 720;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  transition: color 160ms ease;
+}
+
+.magic-onboarding-skip:hover {
+  color: var(--magic-ink);
+}
+
+.magic-onboarding-skip:disabled {
+  cursor: wait;
+  opacity: 0.4;
+}
+
+.magic-onboarding-next {
+  display: flex;
+  height: 40px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 11px;
+  color: #f0f7f2;
+  background: var(--magic-ink);
+  font-size: 10px;
+  font-weight: 730;
+  cursor: pointer;
+  transition: 160ms ease;
+}
+
+.magic-onboarding-next:hover {
+  color: var(--magic-green);
+}
+
+.magic-onboarding-next:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
 /* ── Chat studio ───────────────────────────────────────────────────────── */
 
 .magic-chat-studio {

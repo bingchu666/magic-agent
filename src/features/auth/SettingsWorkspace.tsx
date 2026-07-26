@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowRight,
+  ClipboardList,
   Globe2,
   LogOut,
   ShieldAlert,
@@ -11,10 +12,12 @@ import {
   UserRound,
 } from "lucide-react";
 import { useSession } from "@/features/auth/session.client";
+import { useOnboarding } from "@/features/onboarding/OnboardingProvider";
 import { t } from "@/lib/ui/i18n";
 
 export function SettingsWorkspace() {
   const { user, setLocale, signOut } = useSession();
+  const { ready: onboardingReady, openManually: openOnboarding } = useOnboarding();
   const router = useRouter();
   const locale = user?.locale ?? "zh";
   const copy = t(locale);
@@ -88,6 +91,32 @@ export function SettingsWorkspace() {
               ? "身份信息用于跨设备同步对话、资料与知识锚点。"
               : "Your identity keeps conversations, sources, and anchors connected across sessions."}
           </p>
+        </section>
+
+        <section className="magic-settings-card">
+          <header>
+            <span>
+              <ClipboardList size={18} />
+            </span>
+            <div>
+              <small>{locale === "zh" ? "Personalization" : "Personalization"}</small>
+              <h2>{locale === "zh" ? "新手问卷" : "Onboarding survey"}</h2>
+            </div>
+          </header>
+          <p>
+            {locale === "zh"
+              ? "补充或修改你的魔术学习偏好，帮助我们更好地为你推荐内容。"
+              : "Fill in or update your magic learning preferences to help us recommend better content."}
+          </p>
+          <button
+            type="button"
+            className="magic-settings-action"
+            onClick={openOnboarding}
+            disabled={!onboardingReady}
+          >
+            {locale === "zh" ? "打开问卷" : "Open survey"}
+            <ArrowRight size={15} />
+          </button>
         </section>
 
         <section className="magic-settings-card">
