@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   buildMessages,
   isGroundedMethodRefusal,
+  mergeContinuationText,
   type GenerationInput,
 } from "@/lib/ai/model-gateway";
 
@@ -142,5 +143,27 @@ describe("model gateway prompt", () => {
     expect(user).toContain("previous draft was rejected");
     expect(user).toContain("Begin with the requested method or steps");
     expect(user).toContain("准备：一副牌");
+  });
+
+  it("joins an automatic continuation without duplicating overlap", () => {
+    expect(
+      mergeContinuationText(
+        "Perform a false shuffle and make a ribbon spread.",
+        "ribbon spread. Then ask the spectator to select a card."
+      )
+    ).toBe(
+      "Perform a false shuffle and make a ribbon spread. Then ask the spectator to select a card."
+    );
+  });
+
+  it("finishes an interrupted English sentence inline", () => {
+    expect(
+      mergeContinuationText(
+        "As your hand emerges, subtly pull the",
+        "card into finger palm and close the wallet."
+      )
+    ).toBe(
+      "As your hand emerges, subtly pull the card into finger palm and close the wallet."
+    );
   });
 });

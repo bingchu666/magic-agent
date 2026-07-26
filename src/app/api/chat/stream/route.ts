@@ -120,6 +120,8 @@ export async function POST(req: Request) {
             refreshReason: result.output.refreshReason,
             goalTopic: result.output.goalTopic,
             knowledgeSources: result.output.knowledgeSources,
+            annotatedText:
+              body.responseMode === "annotated" ? result.output.text : undefined,
           });
           console.info("Chat stream completed", {
             provider: result.output.provider,

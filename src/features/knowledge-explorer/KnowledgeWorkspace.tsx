@@ -27,6 +27,7 @@ import { consumeSseStream } from "@/features/chat-agent/sse";
 import { ChatHistoryMessage, Locale, Thread } from "@/lib/domain/types";
 import { createId } from "@/lib/domain/utils";
 import { MiniTreeMap, type MiniTreeNode } from "@/lib/ui/MiniTreeMap";
+import { ensureConceptAnnotations } from "@/lib/agent/concept-annotations";
 
 type CardRelation = "root" | "child" | "related" | "branch";
 type CardStatus = "idle" | "streaming" | "error";
@@ -178,7 +179,8 @@ function AnnotatedMarkdown({
   content: string;
   onTerm: (term: string) => void;
 }) {
-  const transformed = content.replace(/\[\[([^\]]+)\]\]/g, (_, term: string) => {
+  const annotated = ensureConceptAnnotations(content);
+  const transformed = annotated.replace(/\[\[([^\]]+)\]\]/g, (_, term: string) => {
     return `[${term}](concept:${encodeURIComponent(term)})`;
   });
 
@@ -430,7 +432,7 @@ export function KnowledgeWorkspace() {
             )
           );
         },
-        done: ({ knowledgeSources }) => {
+        done: ({ knowledgeSources, annotatedText }) => {
           commitCards((previous) =>
             previous.map((item) =>
               item.id === cardId
@@ -440,6 +442,9 @@ export function KnowledgeWorkspace() {
                       message.id === assistantId
                         ? {
                             ...message,
+                            content:
+                              annotatedText ||
+                              ensureConceptAnnotations(message.content),
                             groundingChecked: true,
                             knowledgeSources,
                           }

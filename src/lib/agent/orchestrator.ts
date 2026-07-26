@@ -4,6 +4,7 @@ import { detectIntent } from "@/lib/agent/intent";
 import { supabaseDb } from "@/lib/data/supabase-db";
 import { AgentOutput, ChatHistoryMessage, ChatStreamRequest, Locale, Message } from "@/lib/domain/types";
 import { normalizeChatHistory, removeDuplicateCurrentUserTurn } from "@/lib/agent/history";
+import { ensureConceptAnnotations } from "@/lib/agent/concept-annotations";
 
 type OrchestratorInput = ChatStreamRequest & {
   userId: string;
@@ -190,7 +191,11 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
     userMessagePromise,
   ]);
 
-  const finalText = normalizeResponseText(generation.text);
+  const normalizedText = normalizeResponseText(generation.text);
+  const finalText =
+    input.responseMode === "annotated"
+      ? ensureConceptAnnotations(normalizedText)
+      : normalizedText;
 
   const output: AgentOutput = {
     text: finalText,

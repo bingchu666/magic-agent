@@ -236,6 +236,7 @@ export type ChatSsePayloadMap = {
     refreshReason: AgentOutput["refreshReason"];
     goalTopic: string | null;
     knowledgeSources: string[];
+    annotatedText?: string;
   };
   error: { message: string };
 };

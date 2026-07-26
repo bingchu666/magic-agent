@@ -22,11 +22,11 @@ export type GenerationResult = {
 
 const MODEL_TIMEOUT_MS = Number(process.env.MODEL_TIMEOUT_MS || 25000);
 const MODEL_STREAM_TIMEOUT_MS = Number(process.env.MODEL_STREAM_TIMEOUT_MS || 180000);
-const MODEL_MAX_TOKENS = Number(process.env.MODEL_MAX_TOKENS || 1200);
+const MODEL_MAX_TOKENS = Number(process.env.MODEL_MAX_TOKENS || 2600);
 const MODEL_TEMPERATURE = Number(process.env.MODEL_TEMPERATURE || 0.55);
-const HISTORY_CLIP_CHARS = Number(process.env.MODEL_HISTORY_CHARS || 8000);
-const HISTORY_MAX_TURNS = Number(process.env.MODEL_HISTORY_TURNS || 16);
-const HISTORY_TURN_MAX_CHARS = Number(process.env.MODEL_HISTORY_TURN_CHARS || 1600);
+const HISTORY_CLIP_CHARS = Number(process.env.MODEL_HISTORY_CHARS || 16000);
+const HISTORY_MAX_TURNS = Number(process.env.MODEL_HISTORY_TURNS || 20);
+const HISTORY_TURN_MAX_CHARS = Number(process.env.MODEL_HISTORY_TURN_CHARS || 3000);
 const ENABLE_OPENAI_FALLBACK = process.env.OPENAI_FALLBACK_ENABLED === "true";
 const configuredGroundedGuardChars = Number(process.env.GROUNDED_STREAM_GUARD_CHARS);
 const GROUNDED_STREAM_GUARD_CHARS = Number.isFinite(configuredGroundedGuardChars)
@@ -279,6 +279,94 @@ function extractDeltaText(chunk: unknown): string {
   return "";
 }
 
+function extractFinishReason(chunk: unknown) {
+  if (!chunk || typeof chunk !== "object") return null;
+  const choices = (chunk as { choices?: unknown }).choices;
+  if (!Array.isArray(choices)) return null;
+  const first = choices[0];
+  if (!first || typeof first !== "object") return null;
+  const reason = (first as { finish_reason?: unknown }).finish_reason;
+  return typeof reason === "string" ? reason : null;
+}
+
+export function mergeContinuationText(base: string, continuation: string) {
+  const left = base.trimEnd();
+  const right = continuation
+    .replace(/^(?:continue|continuing|续写|继续)[：:\s-]*/i, "")
+    .trimStart();
+  if (!right) return left;
+
+  const maxOverlap = Math.min(240, left.length, right.length);
+  for (let size = maxOverlap; size >= 12; size -= 1) {
+    if (
+      left.slice(-size).toLocaleLowerCase() ===
+      right.slice(0, size).toLocaleLowerCase()
+    ) {
+      return `${left}${right.slice(size)}`;
+    }
+  }
+
+  const needsInlineSpace =
+    /[A-Za-z0-9]$/.test(left) && /^[A-Za-z0-9]/.test(right);
+  const separator = needsInlineSpace
+    ? " "
+    : /[。！？.!?：:]$/.test(left)
+      ? "\n\n"
+      : "";
+  return `${left}${separator}${right}`;
+}
+
+async function continueLengthLimitedResponse(params: {
+  provider: "deepseek" | "openai";
+  client: OpenAI;
+  model: string;
+  messages: Array<{
+    role: "system" | "user" | "assistant";
+    content: string;
+  }>;
+  text: string;
+  finishReason: string | null;
+  maxTokens: number;
+  onToken?: (text: string) => void;
+}) {
+  let text = params.text;
+  let finishReason = params.finishReason;
+
+  for (let continuationIndex = 0; continuationIndex < 2; continuationIndex += 1) {
+    if (finishReason !== "length") break;
+    console.info("Model output reached token limit; continuing automatically", {
+      provider: params.provider,
+      model: params.model,
+      continuationIndex: continuationIndex + 1,
+    });
+
+    const completion = await params.client.chat.completions.create({
+      model: params.model,
+      messages: [
+        ...params.messages,
+        { role: "assistant", content: text },
+        {
+          role: "user",
+          content:
+            "Continue exactly from where the previous answer was cut off. Do not restart, summarize, apologize, or repeat completed sections. Finish the interrupted sentence first, then complete the answer. Keep the same language and formatting.",
+        },
+      ],
+      temperature: MODEL_TEMPERATURE,
+      max_tokens: params.maxTokens,
+    });
+    const continuation =
+      completion.choices?.[0]?.message?.content?.trim() || "";
+    if (!continuation) break;
+    const merged = mergeContinuationText(text, continuation);
+    const appended = merged.slice(text.trimEnd().length);
+    if (appended && params.onToken) params.onToken(appended);
+    text = merged;
+    finishReason = completion.choices?.[0]?.finish_reason || null;
+  }
+
+  return text;
+}
+
 async function callProviderStream(params: {
   provider: "deepseek" | "openai";
   client: OpenAI;
@@ -311,7 +399,9 @@ async function callProviderStream(params: {
         let emittedToken = false;
         let suppressDraft = false;
         let groundedGuardPassed = !guardGroundedAnswer;
+        let finishReason: string | null = null;
         for await (const chunk of stream) {
+          finishReason = extractFinishReason(chunk) || finishReason;
           const delta = extractDeltaText(chunk);
           if (!delta) continue;
           text += delta;
@@ -337,6 +427,19 @@ async function callProviderStream(params: {
             bufferedText = "";
             groundedGuardPassed = true;
           }
+        }
+
+        if (!suppressDraft && finishReason === "length") {
+          text = await continueLengthLimitedResponse({
+            provider: params.provider,
+            client: params.client,
+            model,
+            messages,
+            text,
+            finishReason,
+            maxTokens,
+            onToken: params.onToken,
+          });
         }
 
         const normalized = cleanResponseText(text);
