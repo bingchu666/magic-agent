@@ -681,16 +681,30 @@ export function KnowledgeWorkspace() {
           </div>
           <nav>
             {cards.map((card) => (
-              <button
+              <div
                 key={card.id}
-                type="button"
                 className={card.id === activeCardId ? "is-active" : ""}
-                onClick={() => focusCard(card.id)}
               >
-                <span className={`relation-${card.relation}`} />
-                <strong>{card.title}</strong>
-                {card.unread ? <i /> : null}
-              </button>
+                <button
+                  type="button"
+                  className="knowledge-stage-project-select"
+                  onClick={() => focusCard(card.id)}
+                  aria-label={`打开对话：${card.title}`}
+                >
+                  <span className={`relation-${card.relation}`} />
+                  <strong>{card.title}</strong>
+                  {card.unread ? <i /> : null}
+                </button>
+                <button
+                  type="button"
+                  className="knowledge-stage-project-delete"
+                  onClick={() => setDeleteCardId(card.id)}
+                  aria-label={`删除对话：${card.title}`}
+                  title="删除对话"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
             ))}
           </nav>
         </section>
@@ -814,47 +828,48 @@ export function KnowledgeWorkspace() {
                   )
                 )}
 
-                {termPreview?.cardId === activeCard.id ? (
-                  <aside className="knowledge-term-popover">
-                    <div>
-                      <span>关键词预览</span>
-                      <button
-                        type="button"
-                        onClick={() => setTermPreview(null)}
-                        aria-label="关闭关键词预览"
-                      >
-                        <X size={15} />
-                      </button>
-                    </div>
-                    <h2>{termPreview.term}</h2>
-                    {termPreview.loading ? (
-                      <p className="is-loading">
-                        <Loader2 className="animate-spin" size={15} />
-                        正在结合当前卡片解释…
-                      </p>
-                    ) : (
-                      <p>{termPreview.error || termPreview.text}</p>
-                    )}
+              </div>
+
+              {termPreview?.cardId === activeCard.id ? (
+                <aside className="knowledge-term-popover">
+                  <div>
+                    <span>关键词预览</span>
                     <button
                       type="button"
-                      disabled={termPreview.loading}
-                      onClick={() => {
-                        setSpawnError("");
-                        setSpawnDraft({
-                          parentId: activeCard.id,
-                          relation: "child",
-                          sourceTerm: termPreview.term,
-                          value: `请结合上游内容，深入解释“${termPreview.term}”。`,
-                        });
-                      }}
+                      onClick={() => setTermPreview(null)}
+                      aria-label="关闭关键词预览"
                     >
-                      <ArrowUpRight size={15} />
-                      用新卡片追问
+                      <X size={15} />
                     </button>
-                    <small>确认创建后，右侧导航才会出现新节点</small>
-                  </aside>
-                ) : null}
-              </div>
+                  </div>
+                  <h2>{termPreview.term}</h2>
+                  {termPreview.loading ? (
+                    <p className="is-loading">
+                      <Loader2 className="animate-spin" size={15} />
+                      正在结合当前卡片解释…
+                    </p>
+                  ) : (
+                    <p>{termPreview.error || termPreview.text}</p>
+                  )}
+                  <button
+                    type="button"
+                    disabled={termPreview.loading}
+                    onClick={() => {
+                      setSpawnError("");
+                      setSpawnDraft({
+                        parentId: activeCard.id,
+                        relation: "child",
+                        sourceTerm: termPreview.term,
+                        value: `请结合上游内容，深入解释“${termPreview.term}”。`,
+                      });
+                    }}
+                  >
+                    <ArrowUpRight size={15} />
+                    用新卡片追问
+                  </button>
+                  <small>确认创建后，右侧导航才会出现新节点</small>
+                </aside>
+              ) : null}
             </article>
           ) : null}
         </section>

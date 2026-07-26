@@ -7,6 +7,17 @@ describe("ensureConceptAnnotations", () => {
     expect(ensureConceptAnnotations(text)).toBe(text);
   });
 
+  it("still marks visible domain terms when markers exist later", () => {
+    const text = [
+      "Use a **false shuffle** and make a ribbon spread.",
+      "Later explore [[迫牌]], [[错误引导]] and [[双翻]].",
+    ].join("\n\n");
+    const annotated = ensureConceptAnnotations(text);
+
+    expect(annotated).toContain("**[[false shuffle]]**");
+    expect(annotated).toContain("[[ribbon spread]]");
+  });
+
   it("adds clickable terms when the model omits marker syntax", () => {
     const text = [
       "## Performance Steps",

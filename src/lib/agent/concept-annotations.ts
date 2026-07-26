@@ -1,5 +1,4 @@
-const MAX_CONCEPTS = 6;
-const MIN_CONCEPTS = 3;
+const MAX_CONCEPTS = 12;
 
 const DOMAIN_CONCEPT_PATTERNS = [
   /\bfalse shuffle\b/gi,
@@ -68,6 +67,12 @@ function collectCandidates(text: string) {
   };
 
   for (const match of text.matchAll(/\[\[([^\]]+)\]\]/g)) add(match[1]);
+
+  // Prioritize concrete domain phrases over generic bold section labels.
+  for (const pattern of DOMAIN_CONCEPT_PATTERNS) {
+    for (const match of text.matchAll(pattern)) add(match[0]);
+  }
+
   for (const match of text.matchAll(/\*\*([^*\n]{2,64})\*\*/g)) add(match[1]);
   for (const match of text.matchAll(/`([^`\n]{2,48})`/g)) add(match[1]);
 
@@ -83,10 +88,6 @@ function collectCandidates(text: string) {
       /^(?:[-*]\s+|\d+[.、]\s*)?(?:\*\*)?([^：:\n]{2,28})(?:\*\*)?[：:]/
     )?.[1];
     if (label) add(label);
-  }
-
-  for (const pattern of DOMAIN_CONCEPT_PATTERNS) {
-    for (const match of text.matchAll(pattern)) add(match[0]);
   }
 
   return candidates;
@@ -128,7 +129,6 @@ function wrapFirstUnmarked(text: string, candidate: string) {
 export function ensureConceptAnnotations(text: string) {
   if (!text.trim()) return text;
   let annotated = text;
-  if (markerCount(annotated) >= MIN_CONCEPTS) return annotated;
 
   for (const candidate of collectCandidates(text)) {
     if (markerCount(annotated) >= MAX_CONCEPTS) break;
