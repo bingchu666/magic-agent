@@ -825,6 +825,35 @@ a {
   appearance: none;
 }
 
+.magic-auth-password {
+  position: relative;
+}
+
+.magic-auth-password input {
+  padding-right: 38px;
+}
+
+.magic-auth-password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  padding: 5px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--magic-muted);
+  background: transparent;
+  cursor: pointer;
+  transform: translateY(-50%);
+  transition: color 160ms ease;
+}
+
+.magic-auth-password-toggle:hover {
+  color: var(--magic-forest);
+}
+
 .magic-form-notice {
   margin: 0;
   padding: 9px 10px;
@@ -879,6 +908,52 @@ a {
   font-size: 8px;
   line-height: 1.55;
   text-align: center;
+}
+
+.magic-auth-forgot {
+  margin: -4px 0 0;
+  text-align: right;
+}
+
+.magic-auth-forgot a {
+  color: var(--magic-muted);
+  font-size: 9px;
+  font-weight: 720;
+  text-decoration: none;
+  transition: color 160ms ease;
+}
+
+.magic-auth-forgot a:hover {
+  color: var(--magic-forest);
+}
+
+.magic-auth-status {
+  margin: 18px 0 0;
+  color: var(--magic-muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.magic-auth-notice-block {
+  display: grid;
+  gap: 4px;
+  margin-top: 18px;
+}
+
+.magic-auth-back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 18px;
+  color: var(--magic-muted);
+  font-size: 10px;
+  font-weight: 720;
+  text-decoration: none;
+  transition: color 160ms ease;
+}
+
+.magic-auth-back-link:hover {
+  color: var(--magic-forest);
 }
 
 /* ── Chat studio ───────────────────────────────────────────────────────── */

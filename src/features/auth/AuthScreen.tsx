@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import {
   ArrowRight,
   BookOpenText,
@@ -11,6 +12,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { PasswordInput } from "@/features/auth/PasswordInput";
 
 const LOCALE_STORAGE_KEY = "magic_locale_v1";
 
@@ -265,15 +267,22 @@ export function AuthScreen() {
 
             <label>
               <span>{mode === "register" ? (isZh ? "密码（至少 6 位）" : "Password (min. 6)") : isZh ? "密码" : "Password"}</span>
-              <input
-                type="password"
+              <PasswordInput
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 required
                 minLength={6}
                 placeholder="••••••••"
+                showLabel={isZh ? "显示密码" : "Show password"}
+                hideLabel={isZh ? "隐藏密码" : "Hide password"}
               />
             </label>
+
+            {mode === "login" ? (
+              <p className="magic-auth-forgot">
+                <Link href="/auth/forgot-password">{isZh ? "忘记密码？" : "Forgot password?"}</Link>
+              </p>
+            ) : null}
 
             <label>
               <span>{isZh ? "界面语言" : "Interface language"}</span>

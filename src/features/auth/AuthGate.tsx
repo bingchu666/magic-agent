@@ -9,11 +9,15 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { user, loading } = useSession();
 
+  // Any /auth/* route (sign in, forgot password, reset password, ...) is
+  // public — mirrors the prefix check in middleware.ts.
+  const isPublicPath = pathname === "/auth" || pathname.startsWith("/auth/");
+
   useEffect(() => {
     if (loading) return;
 
-    // Not logged in + not on auth page → redirect to /auth
-    if (!user && pathname !== "/auth") {
+    // Not logged in + not on a public auth page → redirect to /auth
+    if (!user && !isPublicPath) {
       router.replace("/auth");
       return;
     }
@@ -22,7 +26,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     if (user && (pathname === "/auth" || pathname === "/")) {
       router.replace("/chat");
     }
-  }, [loading, user, pathname, router]);
+  }, [loading, user, pathname, isPublicPath, router]);
 
   if (loading) {
     return (
@@ -34,8 +38,8 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // Don't render children if not authenticated and not on /auth
-  if (!user && pathname !== "/auth") return null;
+  // Don't render children if not authenticated and not on a public auth page
+  if (!user && !isPublicPath) return null;
 
   return <>{children}</>;
 }
