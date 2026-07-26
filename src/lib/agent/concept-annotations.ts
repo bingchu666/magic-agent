@@ -1,4 +1,5 @@
 const MAX_CONCEPTS = 12;
+export const CONCEPT_HREF_PREFIX = "#knowledge-concept=";
 
 const DOMAIN_CONCEPT_PATTERNS = [
   /\bfalse shuffle\b/gi,
@@ -136,4 +137,12 @@ export function ensureConceptAnnotations(text: string) {
   }
 
   return annotated;
+}
+
+export function toConceptLinkMarkdown(text: string) {
+  return ensureConceptAnnotations(text).replace(
+    /\[\[([^\]]+)\]\]/g,
+    (_, term: string) =>
+      `[${term}](${CONCEPT_HREF_PREFIX}${encodeURIComponent(term)})`
+  );
 }

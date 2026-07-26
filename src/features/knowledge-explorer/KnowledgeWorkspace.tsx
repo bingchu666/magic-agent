@@ -5,11 +5,15 @@ import {
   ArrowUpRight,
   Bookmark,
   Check,
+  ChevronLeft,
+  ChevronRight,
   Copy,
   FileUp,
   GitBranch,
   Home,
   Loader2,
+  Maximize2,
+  Minimize2,
   Network,
   PanelLeft,
   Plus,
@@ -20,6 +24,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import {
+  type CSSProperties,
   type FormEvent,
   type Ref,
   useEffect,
@@ -34,7 +39,11 @@ import { consumeSseStream } from "@/features/chat-agent/sse";
 import { ChatHistoryMessage, Locale, Thread } from "@/lib/domain/types";
 import { createId } from "@/lib/domain/utils";
 import { MiniTreeMap, type MiniTreeNode } from "@/lib/ui/MiniTreeMap";
-import { ensureConceptAnnotations } from "@/lib/agent/concept-annotations";
+import {
+  CONCEPT_HREF_PREFIX,
+  ensureConceptAnnotations,
+  toConceptLinkMarkdown,
+} from "@/lib/agent/concept-annotations";
 
 type CardRelation = "root" | "child" | "related" | "branch";
 type CardStatus = "idle" | "streaming" | "error";
@@ -170,6 +179,31 @@ function collectDescendantIds(cards: KnowledgeCard[], cardId: string) {
   return ids;
 }
 
+function orderedCardTree(cards: KnowledgeCard[]) {
+  const byParent = new Map<string | null, KnowledgeCard[]>();
+  for (const card of cards) {
+    const siblings = byParent.get(card.parentId) ?? [];
+    siblings.push(card);
+    byParent.set(card.parentId, siblings);
+  }
+  for (const siblings of byParent.values()) {
+    siblings.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  const result: Array<{ card: KnowledgeCard; depth: number }> = [];
+  const visited = new Set<string>();
+  const visit = (card: KnowledgeCard, depth: number) => {
+    if (visited.has(card.id)) return;
+    visited.add(card.id);
+    result.push({ card, depth });
+    for (const child of byParent.get(card.id) ?? []) visit(child, depth + 1);
+  };
+
+  for (const root of byParent.get(null) ?? []) visit(root, 0);
+  for (const card of cards) visit(card, 0);
+  return result;
+}
+
 async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
   const data = (await response.json().catch(() => ({}))) as T & { error?: string };
@@ -186,18 +220,15 @@ function AnnotatedMarkdown({
   content: string;
   onTerm: (term: string) => void;
 }) {
-  const annotated = ensureConceptAnnotations(content);
-  const transformed = annotated.replace(/\[\[([^\]]+)\]\]/g, (_, term: string) => {
-    return `[${term}](concept:${encodeURIComponent(term)})`;
-  });
+  const transformed = toConceptLinkMarkdown(content);
 
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       components={{
         a: ({ href, children }) => {
-          if (href?.startsWith("concept:")) {
-            const term = decodeURIComponent(href.replace("concept:", ""));
+          if (href?.startsWith(CONCEPT_HREF_PREFIX)) {
+            const term = decodeURIComponent(href.slice(CONCEPT_HREF_PREFIX.length));
             return (
               <button
                 type="button"
@@ -322,6 +353,7 @@ export function KnowledgeWorkspace() {
   const [pageError, setPageError] = useState("");
   const [hydrated, setHydrated] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [expandedCardId, setExpandedCardId] = useState<string | null>(null);
   const cardBodyRef = useRef<HTMLDivElement | null>(null);
 
   const commitCards = (
@@ -383,18 +415,32 @@ export function KnowledgeWorkspace() {
     ? cards.find((card) => card.id === termPreview.cardId)
     : undefined;
   const activeLineage = activeCard ? lineageFor(cards, activeCard.id) : [];
+  const activeRootCard = activeLineage[0];
+  const activeProjectIds = activeRootCard
+    ? collectDescendantIds(cards, activeRootCard.id)
+    : new Set<string>();
+  const activeProjectCards = cards.filter((card) => activeProjectIds.has(card.id));
+  const sidebarCards = useMemo(() => orderedCardTree(cards), [cards]);
+  const nextCard = activeCard
+    ? [...cards]
+        .filter((card) => card.parentId === activeCard.id)
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0]
+    : undefined;
+  const childExpanded = Boolean(
+    parentCard && activeCard && expandedCardId === activeCard.id
+  );
   const inputValue = activeCard ? cardInputs[activeCard.id] ?? "" : "";
 
   const atlasMapNodes = useMemo<MiniTreeNode[]>(
     () =>
-      cards.map((card) => ({
+      activeProjectCards.map((card) => ({
         id: card.id,
         parentId: card.parentId,
         label: card.title,
         relation: card.relation,
         unread: card.unread,
       })),
-    [cards]
+    [activeProjectCards]
   );
 
   useEffect(() => {
@@ -406,10 +452,12 @@ export function KnowledgeWorkspace() {
   }, [activeCard, activeCard?.messages]);
 
   const focusCard = (cardId: string) => {
+    const target = cardsRef.current.find((card) => card.id === cardId);
     commitCards((previous) =>
       previous.map((card) => (card.id === cardId ? { ...card, unread: false } : card))
     );
     setTermPreview(null);
+    setExpandedCardId(target?.parentId ? target.id : null);
     setActiveCardId(cardId);
   };
 
@@ -609,6 +657,7 @@ export function KnowledgeWorkspace() {
         createdAt: new Date().toISOString(),
       };
       commitCards((previous) => [...previous, root]);
+      setExpandedCardId(null);
       setActiveCardId(root.id);
       setNewTopic("");
       setNewTopicOpen(false);
@@ -651,6 +700,7 @@ export function KnowledgeWorkspace() {
       commitCards((previous) => [...previous, child]);
       setSpawnDraft(null);
       setTermPreview(null);
+      setExpandedCardId(child.id);
       setActiveCardId(child.id);
       void askCard(child.id, question);
     } catch (error) {
@@ -710,6 +760,7 @@ export function KnowledgeWorkspace() {
       const remaining = cardsRef.current.filter((card) => !ids.has(card.id));
       const next = remaining.length ? remaining : createStarterCards();
       commitCards(next);
+      setExpandedCardId(null);
       setActiveCardId(next[0].id);
       setDeleteCardId(null);
       setTermPreview(null);
@@ -769,10 +820,11 @@ export function KnowledgeWorkspace() {
             <i>{cards.length}</i>
           </div>
           <nav>
-            {cards.map((card) => (
+            {sidebarCards.map(({ card, depth }) => (
               <div
                 key={card.id}
                 className={card.id === activeCardId ? "is-active" : ""}
+                style={{ "--card-indent": `${depth * 14}px` } as CSSProperties}
               >
                 <button
                   type="button"
@@ -781,7 +833,12 @@ export function KnowledgeWorkspace() {
                   aria-label={`打开对话：${card.title}`}
                 >
                   <span className={`relation-${card.relation}`} />
-                  <strong>{card.title}</strong>
+                  <strong>
+                    {depth > 0 ? (
+                      <small>{relationMeta[card.relation].label.split(" · ")[0]}</small>
+                    ) : null}
+                    {card.title}
+                  </strong>
                   {card.unread ? <i /> : null}
                 </button>
                 <button
@@ -821,9 +878,28 @@ export function KnowledgeWorkspace() {
           ))}
         </nav>
 
-        <section className="knowledge-stage-stack" aria-live="polite">
-          <div className="knowledge-stage-back-card is-far" aria-hidden="true" />
-          <div className="knowledge-stage-back-card is-near" aria-hidden="true" />
+        <section
+          className={`knowledge-stage-stack ${
+            childExpanded ? "is-child-expanded" : ""
+          }`}
+          aria-live="polite"
+        >
+          {activeLineage.slice(0, -2).map((card, index) => (
+            <button
+              key={`ancestor_${card.id}`}
+              type="button"
+              className="knowledge-stage-ancestor-sheet"
+              style={
+                {
+                  "--ancestor-offset": `${index * 9}px`,
+                } as CSSProperties
+              }
+              onClick={() => focusCard(card.id)}
+              title={`切换到：${card.title}`}
+            >
+              <span>{card.title}</span>
+            </button>
+          ))}
 
           {stageBaseCard ? (
             <article
@@ -841,6 +917,25 @@ export function KnowledgeWorkspace() {
                   <h1>{stageBaseCard.title}</h1>
                 </div>
                 <div className="knowledge-stage-card-tools">
+                  {parentCard ? (
+                    <button
+                      type="button"
+                      onClick={() => focusCard(stageBaseCard.id)}
+                      title="切换到这张父卡片"
+                      aria-label="切换到这张父卡片"
+                    >
+                      <ChevronLeft size={17} />
+                    </button>
+                  ) : nextCard ? (
+                    <button
+                      type="button"
+                      onClick={() => focusCard(nextCard.id)}
+                      title="打开最近的下一层卡片"
+                      aria-label="打开最近的下一层卡片"
+                    >
+                      <ChevronRight size={17} />
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     onClick={() => void copyAnswer(stageBaseCard)}
@@ -874,7 +969,9 @@ export function KnowledgeWorkspace() {
           {parentCard && activeCard ? (
             <article
               key={`child_${activeCard.id}`}
-              className={`knowledge-stage-child-card relation-${activeCard.relation}`}
+              className={`knowledge-stage-child-card relation-${activeCard.relation} ${
+                childExpanded ? "is-expanded" : "is-collapsed"
+              }`}
             >
               <header className="knowledge-stage-child-header">
                 <div>
@@ -885,6 +982,20 @@ export function KnowledgeWorkspace() {
                   <h2>{activeCard.title}</h2>
                 </div>
                 <div>
+                  <button
+                    type="button"
+                    className="knowledge-stage-size-toggle"
+                    onClick={() =>
+                      setExpandedCardId((current) =>
+                        current === activeCard.id ? null : activeCard.id
+                      )
+                    }
+                    title={childExpanded ? "缩小为浮动卡片" : "放大这张卡片"}
+                    aria-label={childExpanded ? "缩小为浮动卡片" : "放大这张卡片"}
+                  >
+                    {childExpanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                    <span>{childExpanded ? "缩小" : "放大"}</span>
+                  </button>
                   <button
                     type="button"
                     onClick={() => void copyAnswer(activeCard)}
@@ -904,8 +1015,8 @@ export function KnowledgeWorkspace() {
                   <button
                     type="button"
                     onClick={() => focusCard(parentCard.id)}
-                    title="收起并返回父卡片"
-                    aria-label="收起并返回父卡片"
+                    title="关闭并返回父卡片"
+                    aria-label="关闭并返回父卡片"
                   >
                     <X size={16} />
                   </button>
@@ -915,9 +1026,36 @@ export function KnowledgeWorkspace() {
                 card={activeCard}
                 onTerm={(term) => void openTerm(activeCard, term)}
                 bodyRef={cardBodyRef}
-                compact
+                compact={!childExpanded}
               />
             </article>
+          ) : null}
+
+          {parentCard || nextCard ? (
+            <nav className="knowledge-stage-layer-switcher" aria-label="层级切换">
+              {parentCard ? (
+                <button
+                  type="button"
+                  onClick={() => focusCard(parentCard.id)}
+                  title={`返回：${parentCard.title}`}
+                  aria-label={`返回父卡片：${parentCard.title}`}
+                >
+                  <ChevronLeft size={19} />
+                  <span>上一层</span>
+                </button>
+              ) : null}
+              {nextCard ? (
+                <button
+                  type="button"
+                  onClick={() => focusCard(nextCard.id)}
+                  title={`进入：${nextCard.title}`}
+                  aria-label={`进入下一层：${nextCard.title}`}
+                >
+                  <span>下一层</span>
+                  <ChevronRight size={19} />
+                </button>
+              ) : null}
+            </nav>
           ) : null}
 
           {termPreview && previewSourceCard ? (
@@ -954,10 +1092,10 @@ export function KnowledgeWorkspace() {
                   });
                 }}
               >
-                <ArrowUpRight size={15} />
-                创建下一层卡片
+                <Maximize2 size={15} />
+                创建分支并放大
               </button>
-              <small>确认后父卡片保留，新卡片从右侧展开</small>
+              <small>预览不会创建节点；确认后才叠加到当前卡片上</small>
             </aside>
           ) : null}
         </section>
@@ -1099,7 +1237,7 @@ export function KnowledgeWorkspace() {
               </button>
               <button type="submit" disabled={!spawnDraft.value.trim() || creatingCard}>
                 {creatingCard ? <Loader2 className="animate-spin" size={15} /> : null}
-                确认创建新卡片
+                创建并进入下一层
               </button>
             </div>
           </form>

@@ -1,5 +1,11 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import ReactMarkdown from "react-markdown";
 import { describe, expect, it } from "vitest";
-import { ensureConceptAnnotations } from "@/lib/agent/concept-annotations";
+import {
+  ensureConceptAnnotations,
+  toConceptLinkMarkdown,
+} from "@/lib/agent/concept-annotations";
 
 describe("ensureConceptAnnotations", () => {
   it("keeps compliant model annotations unchanged", () => {
@@ -35,5 +41,16 @@ describe("ensureConceptAnnotations", () => {
   it("does not fabricate terms in an unstructured generic sentence", () => {
     const text = "This is a short generic response without a technical concept.";
     expect(ensureConceptAnnotations(text)).toBe(text);
+  });
+});
+
+describe("toConceptLinkMarkdown", () => {
+  it("uses a safe hash link that markdown renderers preserve", () => {
+    const markdown = toConceptLinkMarkdown("Use a **false shuffle** first.");
+    expect(markdown).toContain(
+      "[false shuffle](#knowledge-concept=false%20shuffle)"
+    );
+    const html = renderToStaticMarkup(createElement(ReactMarkdown, null, markdown));
+    expect(html).toContain('href="#knowledge-concept=false%20shuffle"');
   });
 });
