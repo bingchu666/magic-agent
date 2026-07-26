@@ -11,6 +11,7 @@ export type GenerationInput = {
   retrievedKnowledge?: string;
   avoidRepeatOf?: string;
   continuationTarget?: string;
+  systemPrompt?: string;
 };
 
 export type GenerationResult = {
@@ -141,7 +142,9 @@ export function buildMessages(
   const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [];
 
   const configuredSystem =
-    process.env.MAGIC_AGENT_SYSTEM_PROMPT?.trim() || DEFAULT_MAGIC_SYSTEM_PROMPT;
+    input.systemPrompt?.trim() ||
+    process.env.MAGIC_AGENT_SYSTEM_PROMPT?.trim() ||
+    DEFAULT_MAGIC_SYSTEM_PROMPT;
   const system = `${configuredSystem}\n\n${RETRIEVAL_POLICY_PROMPT}`;
   if (system) {
     messages.push({ role: "system", content: system });

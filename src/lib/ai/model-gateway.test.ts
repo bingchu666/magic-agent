@@ -77,6 +77,17 @@ describe("model gateway prompt", () => {
     expect(system).toContain("retrieved database knowledge is optional supporting context");
   });
 
+  it("allows a feature-scoped system prompt without changing the global persona", () => {
+    process.env.MAGIC_AGENT_SYSTEM_PROMPT = "Global magic persona.";
+    const system = systemMessage(
+      buildMessages(input({ systemPrompt: "Interdisciplinary knowledge guide." }))
+    );
+
+    expect(system).toContain("Interdisciplinary knowledge guide.");
+    expect(system).not.toContain("Global magic persona.");
+    expect(system).toContain("retrieved database knowledge is optional supporting context");
+  });
+
   it("detects a refusal only when a teaching request has retrieved material", () => {
     const refusal =
       "I cannot teach the full method because this is a published commercial effect protected by copyright.";

@@ -481,9 +481,12 @@ export function ChatWorkspace() {
   return (
     <div className="grid h-full min-w-0 grid-cols-1 gap-4 overflow-x-hidden xl:grid-cols-[240px_minmax(0,1fr)_300px]">
       <section className="h-full min-w-0 overflow-y-auto overflow-x-hidden rounded-2xl border border-zinc-200 bg-white p-3">
-        <div className="mb-3 grid grid-cols-3 gap-1 rounded-xl bg-zinc-100 p-1">
+        <div className="mb-3 grid grid-cols-4 gap-1 rounded-xl bg-zinc-100 p-1">
           <Link href="/chat" className="rounded-lg bg-[#202123] px-2 py-1.5 text-center text-xs font-semibold text-white">
             {copy.chat}
+          </Link>
+          <Link href="/explore" className="rounded-lg px-2 py-1.5 text-center text-xs font-semibold text-zinc-700 hover:bg-white">
+            {copy.explore}
           </Link>
           <Link href="/files" className="rounded-lg px-2 py-1.5 text-center text-xs font-semibold text-zinc-700 hover:bg-white">
             {copy.files}

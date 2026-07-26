@@ -8,6 +8,7 @@ type Copy = {
   files: string;
   settings: string;
   chat: string;
+  explore: string;
   adminVideos: string;
   adminModeration: string;
   rightPanelFiles: string;
@@ -32,6 +33,7 @@ const dictionary: Record<Locale, Copy> = {
     files: "文件",
     settings: "设置",
     chat: "对话",
+    explore: "层级卡片",
     adminVideos: "视频库管理",
     adminModeration: "安全审计",
     rightPanelFiles: "文件洞察",
@@ -54,6 +56,7 @@ const dictionary: Record<Locale, Copy> = {
     files: "Files",
     settings: "Settings",
     chat: "Chat",
+    explore: "Atlas",
     adminVideos: "Video Admin",
     adminModeration: "Moderation",
     rightPanelFiles: "File Insights",
