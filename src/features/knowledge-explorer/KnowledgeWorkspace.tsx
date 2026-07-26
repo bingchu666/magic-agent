@@ -19,7 +19,14 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type FormEvent,
+  type Ref,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useSession } from "@/features/auth/session.client";
@@ -222,6 +229,80 @@ function RelationIcon({ relation }: { relation: CardRelation }) {
   return <Home size={16} />;
 }
 
+function KnowledgeCardConversation({
+  card,
+  onTerm,
+  bodyRef,
+  compact = false,
+}: {
+  card: KnowledgeCard;
+  onTerm: (term: string) => void;
+  bodyRef?: Ref<HTMLDivElement>;
+  compact?: boolean;
+}) {
+  return (
+    <div
+      className={`knowledge-stage-card-body ${compact ? "is-compact" : ""}`}
+      ref={bodyRef}
+    >
+      {card.messages.length === 0 ? (
+        <div className="knowledge-stage-empty">
+          <Network size={28} />
+          <h2>准备建立这张知识卡片</h2>
+          <p>在下方输入问题，回答会在这里展开。</p>
+        </div>
+      ) : null}
+
+      {card.messages.map((message) =>
+        message.role === "user" ? (
+          <div key={message.id} className="knowledge-stage-question">
+            {message.content}
+          </div>
+        ) : (
+          <section key={message.id} className="knowledge-stage-answer">
+            <div className="knowledge-stage-thinking">
+              {card.status === "streaming" && !message.content ? (
+                <>
+                  <Loader2 className="animate-spin" size={15} />
+                  正在读取上下文与知识库
+                </>
+              ) : (
+                <>
+                  <span />
+                  AI 回答
+                </>
+              )}
+            </div>
+            <AnnotatedMarkdown
+              content={message.content || "正在展开知识结构…"}
+              onTerm={onTerm}
+            />
+            {message.groundingChecked ? (
+              message.knowledgeSources?.length ? (
+                <div className="knowledge-stage-grounding is-hit">
+                  <Check size={14} />
+                  <div>
+                    <strong>已引用数据库</strong>
+                    <span>{message.knowledgeSources.join(" · ")}</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="knowledge-stage-grounding is-miss">
+                  <Network size={14} />
+                  <div>
+                    <strong>本次未命中知识库</strong>
+                    <span>回答来自通用模型，没有伪造数据库引用</span>
+                  </div>
+                </div>
+              )
+            ) : null}
+          </section>
+        )
+      )}
+    </div>
+  );
+}
+
 export function KnowledgeWorkspace() {
   const { user } = useSession();
   const locale: Locale = user?.locale === "en" ? "en" : "zh";
@@ -293,6 +374,14 @@ export function KnowledgeWorkspace() {
   }, [hydrated, sidebarOpen]);
 
   const activeCard = cards.find((card) => card.id === activeCardId) ?? cards[0];
+  const parentCard =
+    activeCard?.parentId
+      ? cards.find((card) => card.id === activeCard.parentId)
+      : undefined;
+  const stageBaseCard = parentCard ?? activeCard;
+  const previewSourceCard = termPreview
+    ? cards.find((card) => card.id === termPreview.cardId)
+    : undefined;
   const activeLineage = activeCard ? lineageFor(cards, activeCard.id) : [];
   const inputValue = activeCard ? cardInputs[activeCard.id] ?? "" : "";
 
@@ -631,8 +720,8 @@ export function KnowledgeWorkspace() {
     }
   };
 
-  const copyAnswer = async () => {
-    const answer = lastAssistant(activeCard);
+  const copyAnswer = async (card = activeCard) => {
+    const answer = lastAssistant(card);
     if (!answer) return;
     await navigator.clipboard.writeText(answer.replace(/\[\[|\]\]/g, ""));
     setCopied(true);
@@ -736,23 +825,25 @@ export function KnowledgeWorkspace() {
           <div className="knowledge-stage-back-card is-far" aria-hidden="true" />
           <div className="knowledge-stage-back-card is-near" aria-hidden="true" />
 
-          {activeCard ? (
+          {stageBaseCard ? (
             <article
-              key={activeCard.id}
-              className={`knowledge-stage-card relation-${activeCard.relation}`}
+              key={stageBaseCard.id}
+              className={`knowledge-stage-card relation-${stageBaseCard.relation} ${
+                parentCard ? "has-child-open" : ""
+              }`}
             >
               <header className="knowledge-stage-card-header">
                 <div>
                   <span>
-                    <RelationIcon relation={activeCard.relation} />
-                    {relationMeta[activeCard.relation].label}
+                    <RelationIcon relation={stageBaseCard.relation} />
+                    {relationMeta[stageBaseCard.relation].label}
                   </span>
-                  <h1>{activeCard.title}</h1>
+                  <h1>{stageBaseCard.title}</h1>
                 </div>
                 <div className="knowledge-stage-card-tools">
                   <button
                     type="button"
-                    onClick={() => void copyAnswer()}
+                    onClick={() => void copyAnswer(stageBaseCard)}
                     title="复制回答"
                     aria-label="复制回答"
                   >
@@ -763,7 +854,7 @@ export function KnowledgeWorkspace() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setDeleteCardId(activeCard.id)}
+                    onClick={() => setDeleteCardId(stageBaseCard.id)}
                     title="删除卡片"
                     aria-label="删除卡片"
                   >
@@ -772,105 +863,102 @@ export function KnowledgeWorkspace() {
                 </div>
               </header>
 
-              <div className="knowledge-stage-card-body" ref={cardBodyRef}>
-                {activeCard.messages.length === 0 ? (
-                  <div className="knowledge-stage-empty">
-                    <Network size={28} />
-                    <h2>准备建立这张知识卡片</h2>
-                    <p>在下方输入问题，回答会在这里展开。</p>
-                  </div>
-                ) : null}
+              <KnowledgeCardConversation
+                card={stageBaseCard}
+                onTerm={(term) => void openTerm(stageBaseCard, term)}
+                bodyRef={parentCard ? undefined : cardBodyRef}
+              />
+            </article>
+          ) : null}
 
-                {activeCard.messages.map((message) =>
-                  message.role === "user" ? (
-                    <div key={message.id} className="knowledge-stage-question">
-                      {message.content}
-                    </div>
-                  ) : (
-                    <section key={message.id} className="knowledge-stage-answer">
-                      <div className="knowledge-stage-thinking">
-                        {activeCard.status === "streaming" && !message.content ? (
-                          <>
-                            <Loader2 className="animate-spin" size={15} />
-                            正在读取上下文与知识库
-                          </>
-                        ) : (
-                          <>
-                            <span />
-                            AI 回答
-                          </>
-                        )}
-                      </div>
-                      <AnnotatedMarkdown
-                        content={message.content || "正在展开知识结构…"}
-                        onTerm={(term) => void openTerm(activeCard, term)}
-                      />
-                      {message.groundingChecked ? (
-                        message.knowledgeSources?.length ? (
-                          <div className="knowledge-stage-grounding is-hit">
-                            <Check size={14} />
-                            <div>
-                              <strong>已引用数据库</strong>
-                              <span>{message.knowledgeSources.join(" · ")}</span>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="knowledge-stage-grounding is-miss">
-                            <Network size={14} />
-                            <div>
-                              <strong>本次未命中知识库</strong>
-                              <span>回答来自通用模型，没有伪造数据库引用</span>
-                            </div>
-                          </div>
-                        )
-                      ) : null}
-                    </section>
-                  )
-                )}
-
-              </div>
-
-              {termPreview?.cardId === activeCard.id ? (
-                <aside className="knowledge-term-popover">
-                  <div>
-                    <span>关键词预览</span>
-                    <button
-                      type="button"
-                      onClick={() => setTermPreview(null)}
-                      aria-label="关闭关键词预览"
-                    >
-                      <X size={15} />
-                    </button>
-                  </div>
-                  <h2>{termPreview.term}</h2>
-                  {termPreview.loading ? (
-                    <p className="is-loading">
-                      <Loader2 className="animate-spin" size={15} />
-                      正在结合当前卡片解释…
-                    </p>
-                  ) : (
-                    <p>{termPreview.error || termPreview.text}</p>
-                  )}
+          {parentCard && activeCard ? (
+            <article
+              key={`child_${activeCard.id}`}
+              className={`knowledge-stage-child-card relation-${activeCard.relation}`}
+            >
+              <header className="knowledge-stage-child-header">
+                <div>
+                  <span>
+                    <RelationIcon relation={activeCard.relation} />
+                    第 {activeLineage.length} 层 · {relationMeta[activeCard.relation].label}
+                  </span>
+                  <h2>{activeCard.title}</h2>
+                </div>
+                <div>
                   <button
                     type="button"
-                    disabled={termPreview.loading}
-                    onClick={() => {
-                      setSpawnError("");
-                      setSpawnDraft({
-                        parentId: activeCard.id,
-                        relation: "child",
-                        sourceTerm: termPreview.term,
-                        value: `请结合上游内容，深入解释“${termPreview.term}”。`,
-                      });
-                    }}
+                    onClick={() => void copyAnswer(activeCard)}
+                    title="复制回答"
+                    aria-label="复制回答"
                   >
-                    <ArrowUpRight size={15} />
-                    用新卡片追问
+                    <Copy size={16} />
                   </button>
-                  <small>确认创建后，右侧导航才会出现新节点</small>
-                </aside>
-              ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setDeleteCardId(activeCard.id)}
+                    title="删除这层对话"
+                    aria-label="删除这层对话"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => focusCard(parentCard.id)}
+                    title="收起并返回父卡片"
+                    aria-label="收起并返回父卡片"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+              </header>
+              <KnowledgeCardConversation
+                card={activeCard}
+                onTerm={(term) => void openTerm(activeCard, term)}
+                bodyRef={cardBodyRef}
+                compact
+              />
             </article>
+          ) : null}
+
+          {termPreview && previewSourceCard ? (
+            <aside className="knowledge-term-popover">
+              <div>
+                <span>从“{previewSourceCard.title}”向下一层</span>
+                <button
+                  type="button"
+                  onClick={() => setTermPreview(null)}
+                  aria-label="关闭关键词预览"
+                >
+                  <X size={15} />
+                </button>
+              </div>
+              <h2>{termPreview.term}</h2>
+              {termPreview.loading ? (
+                <p className="is-loading">
+                  <Loader2 className="animate-spin" size={15} />
+                  正在结合当前卡片解释…
+                </p>
+              ) : (
+                <p>{termPreview.error || termPreview.text}</p>
+              )}
+              <button
+                type="button"
+                disabled={termPreview.loading}
+                onClick={() => {
+                  setSpawnError("");
+                  setSpawnDraft({
+                    parentId: previewSourceCard.id,
+                    relation: "child",
+                    sourceTerm: termPreview.term,
+                    value: `请结合上游内容，深入解释“${termPreview.term}”。`,
+                  });
+                }}
+              >
+                <ArrowUpRight size={15} />
+                创建下一层卡片
+              </button>
+              <small>确认后父卡片保留，新卡片从右侧展开</small>
+            </aside>
           ) : null}
         </section>
 

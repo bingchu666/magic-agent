@@ -5007,6 +5007,160 @@ a {
     0 30px 80px rgba(43, 65, 52, 0.14);
 }
 
+.knowledge-stage-card.has-child-open {
+  width: 88%;
+  opacity: 0.78;
+  filter: saturate(0.88);
+  transition:
+    width 460ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 280ms ease,
+    filter 280ms ease;
+}
+
+.knowledge-stage-child-card {
+  position: absolute;
+  z-index: 18;
+  top: 10%;
+  right: -9%;
+  display: grid;
+  width: min(55%, 660px);
+  height: 72%;
+  min-height: 360px;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  border-radius: 25px;
+  color: var(--stage-ink);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.88), rgba(247, 251, 248, 0.68));
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 32px 90px rgba(33, 56, 43, 0.24),
+    0 8px 28px rgba(36, 64, 47, 0.13);
+  backdrop-filter: blur(34px) saturate(160%);
+  -webkit-backdrop-filter: blur(34px) saturate(160%);
+  animation: knowledge-child-card-enter 480ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.knowledge-stage-child-card.relation-child {
+  border-top: 3px solid color-mix(in srgb, var(--stage-child) 72%, white);
+}
+
+.knowledge-stage-child-card.relation-related {
+  border-top: 3px solid color-mix(in srgb, var(--stage-related) 72%, white);
+}
+
+.knowledge-stage-child-card.relation-branch {
+  border-top: 3px solid color-mix(in srgb, var(--stage-branch) 72%, white);
+}
+
+@keyframes knowledge-child-card-enter {
+  from {
+    opacity: 0;
+    transform: translate3d(70px, 10px, -40px) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+.knowledge-stage-child-header {
+  display: flex;
+  min-height: 76px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 17px 18px 15px 21px;
+  border-bottom: 1px solid rgba(70, 91, 78, 0.1);
+}
+
+.knowledge-stage-child-header > div:first-child {
+  min-width: 0;
+}
+
+.knowledge-stage-child-header span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--stage-muted);
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.knowledge-stage-child-header h2 {
+  margin: 6px 0 0;
+  overflow: hidden;
+  color: var(--stage-ink);
+  font-size: clamp(18px, 1.5vw, 23px);
+  letter-spacing: -0.025em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledge-stage-child-header > div:last-child {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+}
+
+.knowledge-stage-child-header > div:last-child button {
+  display: grid;
+  width: 33px;
+  height: 33px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.84);
+  border-radius: 50%;
+  color: #5d6d64;
+  background: rgba(255, 255, 255, 0.58);
+  box-shadow: inset 0 1px 0 #ffffff;
+  cursor: pointer;
+  transition: 160ms ease;
+}
+
+.knowledge-stage-child-header > div:last-child button:hover {
+  color: var(--stage-accent);
+  background: rgba(255, 255, 255, 0.94);
+  transform: translateY(-1px);
+}
+
+.knowledge-stage-child-header > div:last-child button:nth-child(2):hover {
+  color: #b94f45;
+}
+
+.knowledge-stage-card-body.is-compact {
+  padding: 22px 25px 54px;
+}
+
+.knowledge-stage-card-body.is-compact .knowledge-stage-question {
+  max-width: 90%;
+  margin-bottom: 22px;
+  padding: 9px 12px;
+  font-size: 12px;
+}
+
+.knowledge-stage-card-body.is-compact .knowledge-stage-answer {
+  margin-bottom: 30px;
+  font-size: 14px;
+  line-height: 1.78;
+}
+
+.knowledge-stage-card-body.is-compact .knowledge-stage-answer h1 {
+  font-size: 20px;
+}
+
+.knowledge-stage-card-body.is-compact .knowledge-stage-answer h2 {
+  font-size: 18px;
+}
+
+.knowledge-stage-card-body.is-compact .knowledge-stage-answer h3 {
+  font-size: 16px;
+}
+
 @keyframes knowledge-card-enter {
   from {
     opacity: 0;
@@ -5807,6 +5961,11 @@ a {
   .knowledge-stage-error {
     right: 48px;
   }
+
+  .knowledge-stage-child-card {
+    right: -2%;
+    width: min(62%, 620px);
+  }
 }
 
 @media (max-width: 720px) {
@@ -5906,6 +6065,34 @@ a {
 
   .knowledge-stage-card {
     border-radius: 23px;
+  }
+
+  .knowledge-stage-card.has-child-open {
+    width: 100%;
+    opacity: 0.3;
+    filter: blur(1px) saturate(0.7);
+  }
+
+  .knowledge-stage-child-card {
+    top: 5%;
+    right: 2%;
+    width: 96%;
+    height: 88%;
+    min-height: 0;
+    border-radius: 22px;
+  }
+
+  .knowledge-stage-child-header {
+    min-height: 70px;
+    padding: 14px 13px 13px 16px;
+  }
+
+  .knowledge-stage-child-header > div:last-child button:first-child {
+    display: none;
+  }
+
+  .knowledge-stage-card-body.is-compact {
+    padding: 18px 18px 54px;
   }
 
   .knowledge-stage-card-header {
