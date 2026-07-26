@@ -1,91 +1,67 @@
 "use client";
 
 import {
-  ArrowDown,
-  ArrowLeft,
   ArrowRight,
   ArrowUpRight,
-  BookOpen,
-  BrainCircuit,
+  Bookmark,
   Check,
-  ChevronRight,
-  HelpCircle,
-  FileText,
+  Copy,
+  FileUp,
   GitBranch,
   Home,
   Loader2,
-  Map,
-  Minus,
   Network,
+  PanelLeft,
   Plus,
   Send,
-  Sparkles,
+  Settings,
   Trash2,
   X,
 } from "lucide-react";
 import Link from "next/link";
-import {
-  type CSSProperties,
-  type FormEvent,
-  type MouseEvent,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { consumeSseStream } from "@/features/chat-agent/sse";
 import { useSession } from "@/features/auth/session.client";
-import { ChatHistoryMessage, FileAsset, Locale } from "@/lib/domain/types";
+import { consumeSseStream } from "@/features/chat-agent/sse";
+import { ChatHistoryMessage, Locale, Thread } from "@/lib/domain/types";
 import { createId } from "@/lib/domain/utils";
 import { MiniTreeMap, type MiniTreeNode } from "@/lib/ui/MiniTreeMap";
 
 type CardRelation = "root" | "child" | "related" | "branch";
 type CardStatus = "idle" | "streaming" | "error";
-type ThemeName = "parchment" | "midnight" | "sage";
 
 type KnowledgeMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  groundingChecked?: boolean;
+  knowledgeSources?: string[];
 };
 
 type KnowledgeCard = {
   id: string;
+  threadId?: string;
   parentId: string | null;
   relation: CardRelation;
   title: string;
   question: string;
   messages: KnowledgeMessage[];
-  x: number;
-  y: number;
   status: CardStatus;
   unread: boolean;
   createdAt: string;
 };
 
-type KnowledgeAnchor = {
-  id: string;
-  cardId: string;
-  title: string;
-  understanding: string;
-  review: string;
-  createdAt: string;
-};
-
 type StoredWorkspace = {
   cards: KnowledgeCard[];
-  anchors: KnowledgeAnchor[];
-  projectSummary: string;
-  theme: ThemeName;
-  selectedAttachmentIds: string[];
+  activeCardId: string;
 };
 
 type SpawnDraft = {
   parentId: string;
   relation: Exclude<CardRelation, "root">;
   value: string;
+  sourceTerm?: string;
 };
 
 type TermPreview = {
@@ -96,103 +72,36 @@ type TermPreview = {
   error?: string;
 };
 
-const STORAGE_KEY = "magic_atlas_workspace_v1";
-const CARD_WIDTH = 420;
-const CARD_HEIGHT = 560;
+const STORAGE_KEY = "magic_atlas_glass_stage_v2";
 
-const relationMeta: Record<CardRelation, { label: string; short: string }> = {
-  root: { label: "主线卡片", short: "主" },
-  child: { label: "子卡片 · 深入概念", short: "↗" },
-  related: { label: "关联卡片 · 横向发散", short: "→" },
-  branch: { label: "分支卡片 · 继承上下文", short: "↓" },
+const relationMeta: Record<CardRelation, { label: string; prompt: string }> = {
+  root: { label: "主线卡片", prompt: "建立项目的核心问题与共同背景" },
+  child: { label: "子卡片 · 深入概念", prompt: "向下钻进一个概念" },
+  related: { label: "关联卡片 · 横向发散", prompt: "横向比较相邻知识" },
+  branch: { label: "分支卡片 · 继承上下文", prompt: "继承上下文，另起路线" },
 };
 
 function createStarterCards(): KnowledgeCard[] {
-  const now = new Date().toISOString();
   return [
     {
-      id: "starter_root",
+      id: "glass_starter",
       parentId: null,
       relation: "root",
-      title: "量子纠缠与信息",
-      question: "量子纠缠为什么不能用来进行超光速通信？",
-      x: 64,
-      y: 330,
+      title: "开始探索",
+      question: "输入一个问题，建立你的第一张知识卡片",
       status: "idle",
       unread: false,
-      createdAt: now,
+      createdAt: new Date().toISOString(),
       messages: [
         {
-          id: "starter_root_user",
-          role: "user",
-          content: "量子纠缠为什么不能用来进行超光速通信？",
-        },
-        {
-          id: "starter_root_assistant",
+          id: "glass_starter_assistant",
           role: "assistant",
           content:
-            "纠缠粒子的测量结果会呈现超越经典概率的相关性，但单次结果仍然是随机的。观察者无法选择本地测量的结果，因此也就无法把一段可控信息编码进去。\n\n要确认两端结果之间的关联，双方仍需通过普通通信交换数据。这个限制由[[不可通信定理]]严格刻画：局部操作不能改变远端可观测的统计分布。\n\n[[贝尔不等式]]告诉我们这种关联不是经典的“事先约定”，但它并不等于信号传播。这里最容易混淆的是[[量子态坍缩]]与可传递信息之间的区别。",
-        },
-      ],
-    },
-    {
-      id: "starter_child",
-      parentId: "starter_root",
-      relation: "child",
-      title: "不可通信定理",
-      question: "不可通信定理具体限制了什么？",
-      x: 570,
-      y: 70,
-      status: "idle",
-      unread: true,
-      createdAt: now,
-      messages: [
-        {
-          id: "starter_child_user",
-          role: "user",
-          content: "不可通信定理具体限制了什么？",
-        },
-        {
-          id: "starter_child_assistant",
-          role: "assistant",
-          content:
-            "它限制的是远端可见的“边缘概率分布”。无论你在纠缠对的一端选择哪种测量，另一端单独统计自己的结果时，看到的分布都不会发生可识别变化。\n\n只有把两端记录放在一起比较，[[联合概率]]中的关联才会出现。因此，纠缠能提供关联资源，却不能单独构成通信信道。",
-        },
-      ],
-    },
-    {
-      id: "starter_related",
-      parentId: "starter_root",
-      relation: "related",
-      title: "量子关联 vs 经典关联",
-      question: "量子关联和经典相关性真正不同在哪里？",
-      x: 570,
-      y: 690,
-      status: "idle",
-      unread: true,
-      createdAt: now,
-      messages: [
-        {
-          id: "starter_related_user",
-          role: "user",
-          content: "量子关联和经典相关性真正不同在哪里？",
-        },
-        {
-          id: "starter_related_assistant",
-          role: "assistant",
-          content:
-            "经典关联可以解释为两边共享了一份预先写好的答案；量子关联在合适的测量设置下会违反[[贝尔不等式]]，排除这一类局域隐藏变量解释。\n\n但两者都需要事后对照数据才能被识别。差异在于关联结构，而不在于谁能更快地发送消息。",
+            "这里不再是线性聊天框。AI 会把值得继续理解的[[关键词]]标出来：点击后先看一个小预览，只有你确认创建，才会从当前节点展开一张新的独立卡片。\n\n右侧导航会自动记录卡片之间的父子关系；数据库命中情况也会显示在每次回答下方。",
         },
       ],
     },
   ];
-}
-
-function lastAssistant(card: KnowledgeCard | undefined) {
-  return [...(card?.messages ?? [])]
-    .reverse()
-    .find((message) => message.role === "assistant")
-    ?.content.trim() ?? "";
 }
 
 function cleanTitle(value: string) {
@@ -200,7 +109,42 @@ function cleanTitle(value: string) {
     .replace(/\[\[|\]\]/g, "")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, 32);
+    .slice(0, 34);
+}
+
+function lastAssistant(card: KnowledgeCard | undefined) {
+  return (
+    [...(card?.messages ?? [])]
+      .reverse()
+      .find((message) => message.role === "assistant")
+      ?.content.trim() ?? ""
+  );
+}
+
+function lineageFor(cards: KnowledgeCard[], cardId: string) {
+  const result: KnowledgeCard[] = [];
+  let current = cards.find((card) => card.id === cardId);
+  const visited = new Set<string>();
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    result.unshift(current);
+    current = current.parentId
+      ? cards.find((card) => card.id === current?.parentId)
+      : undefined;
+  }
+  return result;
+}
+
+function historyForCard(cards: KnowledgeCard[], cardId: string): ChatHistoryMessage[] {
+  return lineageFor(cards, cardId)
+    .flatMap((card) =>
+      card.messages.map((message) => ({
+        role: message.role,
+        content: message.content.replace(/\[\[|\]\]/g, ""),
+      }))
+    )
+    .filter((message) => message.content.trim())
+    .slice(-18);
 }
 
 function collectDescendantIds(cards: KnowledgeCard[], cardId: string) {
@@ -218,78 +162,13 @@ function collectDescendantIds(cards: KnowledgeCard[], cardId: string) {
   return ids;
 }
 
-function lineageFor(cards: KnowledgeCard[], cardId: string) {
-  const result: KnowledgeCard[] = [];
-  let current = cards.find((card) => card.id === cardId);
-  while (current) {
-    result.unshift(current);
-    current = current.parentId
-      ? cards.find((card) => card.id === current?.parentId)
-      : undefined;
+async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, init);
+  const data = (await response.json().catch(() => ({}))) as T & { error?: string };
+  if (!response.ok) {
+    throw new Error(data.error || `Request failed (${response.status})`);
   }
-  return result;
-}
-
-function historyForCard(cards: KnowledgeCard[], cardId: string): ChatHistoryMessage[] {
-  const lineage = lineageFor(cards, cardId);
-  return lineage
-    .flatMap((card) =>
-      card.messages.map((message) => ({
-        role: message.role,
-        content: message.content.replace(/\[\[|\]\]/g, ""),
-      }))
-    )
-    .slice(-14);
-}
-
-function positionForCard(
-  cards: KnowledgeCard[],
-  parent: KnowledgeCard,
-  relation: Exclude<CardRelation, "root">
-) {
-  const proposed =
-    relation === "child"
-      ? { x: parent.x + 506, y: Math.max(64, parent.y - 260) }
-      : relation === "related"
-        ? { x: parent.x + 506, y: parent.y + 90 }
-        : { x: parent.x + 92, y: parent.y + 650 };
-
-  let y = proposed.y;
-  while (
-    cards.some(
-      (card) =>
-        Math.abs(card.x - proposed.x) < CARD_WIDTH * 0.82 &&
-        Math.abs(card.y - y) < CARD_HEIGHT * 0.88
-    )
-  ) {
-    y += CARD_HEIGHT + 70;
-  }
-  return { x: proposed.x, y };
-}
-
-function buildExplorationPrompt(card: KnowledgeCard, question: string, quote: string) {
-  const relationInstruction =
-    card.relation === "child"
-      ? `这是一个子卡片。请围绕“${card.title}”从第一性原理向下深挖，默认读者已经看过上游卡片。`
-      : card.relation === "related"
-        ? `这是一个关联卡片。请围绕“${card.title}”做横向比较或相邻概念发散，不要重复上游解释。`
-        : card.relation === "branch"
-          ? `这是一个分支卡片。请继承上游讨论的事实与定义，但沿着“${card.title}”开启新的推理路线。`
-          : "这是主线卡片。请先建立清晰框架，再回答核心问题。";
-  const quoteInstruction = quote
-    ? `\n用户明确引用了这段内容，请优先围绕它回答：\n“${quote.slice(0, 800)}”`
-    : "";
-
-  return `${relationInstruction}
-
-用户问题：${question}
-${quoteInstruction}
-
-回答要求：
-1. 直接回答，结构清楚，控制在 300 到 600 字；
-2. 解释关键因果关系，必要时给一个具体例子；
-3. 把 3 到 6 个值得继续探索的核心术语严格写成 [[术语]]，不要解释这套标注语法；
-4. 区分已知事实、常见误解与仍有争议之处。`;
+  return data;
 }
 
 function AnnotatedMarkdown({
@@ -313,9 +192,9 @@ function AnnotatedMarkdown({
             return (
               <button
                 type="button"
-                className="atlas-concept"
+                className="knowledge-stage-concept"
                 onClick={() => onTerm(term)}
-                title={`预览：${term}`}
+                title={`预览并追问：${term}`}
               >
                 {children}
               </button>
@@ -335,10 +214,10 @@ function AnnotatedMarkdown({
 }
 
 function RelationIcon({ relation }: { relation: CardRelation }) {
-  if (relation === "child") return <ArrowUpRight size={14} />;
-  if (relation === "related") return <ArrowRight size={14} />;
-  if (relation === "branch") return <ArrowDown size={14} />;
-  return <Home size={14} />;
+  if (relation === "child") return <ArrowUpRight size={16} />;
+  if (relation === "related") return <ArrowRight size={16} />;
+  if (relation === "branch") return <GitBranch size={16} />;
+  return <Home size={16} />;
 }
 
 export function KnowledgeWorkspace() {
@@ -346,25 +225,21 @@ export function KnowledgeWorkspace() {
   const locale: Locale = user?.locale === "en" ? "en" : "zh";
   const [cards, setCards] = useState<KnowledgeCard[]>(createStarterCards);
   const cardsRef = useRef(cards);
-  const [activeCardId, setActiveCardId] = useState("starter_root");
-  const [theme, setTheme] = useState<ThemeName>("parchment");
-  const [zoom, setZoom] = useState(0.9);
-  const [startTopic, setStartTopic] = useState("");
+  const [activeCardId, setActiveCardId] = useState("glass_starter");
+  const activeCardIdRef = useRef(activeCardId);
   const [cardInputs, setCardInputs] = useState<Record<string, string>>({});
   const [spawnDraft, setSpawnDraft] = useState<SpawnDraft | null>(null);
+  const [spawnError, setSpawnError] = useState("");
+  const [creatingCard, setCreatingCard] = useState(false);
   const [termPreview, setTermPreview] = useState<TermPreview | null>(null);
-  const [quote, setQuote] = useState("");
-  const [files, setFiles] = useState<FileAsset[]>([]);
-  const [selectedAttachmentIds, setSelectedAttachmentIds] = useState<string[]>([]);
-  const [anchors, setAnchors] = useState<KnowledgeAnchor[]>([]);
-  const [understanding, setUnderstanding] = useState("");
-  const [understandingReview, setUnderstandingReview] = useState("");
-  const [validatingUnderstanding, setValidatingUnderstanding] = useState(false);
-  const [projectSummary, setProjectSummary] = useState("");
-  const [summarizing, setSummarizing] = useState(false);
+  const [newTopicOpen, setNewTopicOpen] = useState(false);
+  const [newTopic, setNewTopic] = useState("");
   const [deleteCardId, setDeleteCardId] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [pageError, setPageError] = useState("");
   const [hydrated, setHydrated] = useState(false);
-  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const cardBodyRef = useRef<HTMLDivElement | null>(null);
 
   const commitCards = (
     update: KnowledgeCard[] | ((previous: KnowledgeCard[]) => KnowledgeCard[])
@@ -375,56 +250,49 @@ export function KnowledgeWorkspace() {
   };
 
   useEffect(() => {
+    activeCardIdRef.current = activeCardId;
+  }, [activeCardId]);
+
+  useEffect(() => {
     try {
       const raw = window.localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const stored = JSON.parse(raw) as Partial<StoredWorkspace>;
         if (Array.isArray(stored.cards) && stored.cards.length > 0) {
           commitCards(stored.cards);
-          setActiveCardId(stored.cards[0].id);
-        }
-        if (Array.isArray(stored.anchors)) setAnchors(stored.anchors);
-        if (typeof stored.projectSummary === "string") setProjectSummary(stored.projectSummary);
-        if (stored.theme === "parchment" || stored.theme === "midnight" || stored.theme === "sage") {
-          setTheme(stored.theme);
-        }
-        if (Array.isArray(stored.selectedAttachmentIds)) {
-          setSelectedAttachmentIds(stored.selectedAttachmentIds);
+          const storedActive = stored.cards.some((card) => card.id === stored.activeCardId)
+            ? stored.activeCardId
+            : stored.cards[0].id;
+          setActiveCardId(storedActive ?? stored.cards[0].id);
         }
       }
+      const storedSidebar = window.localStorage.getItem(
+        "magic_atlas_sidebar_open"
+      );
+      if (storedSidebar === "false") setSidebarOpen(false);
     } catch {
-      // Ignore invalid local workspace data and keep the starter map.
+      // Invalid local UI state should not prevent a new exploration.
     }
     setHydrated(true);
   }, []);
 
   useEffect(() => {
     if (!hydrated) return;
-    const workspace: StoredWorkspace = {
-      cards,
-      anchors,
-      projectSummary,
-      theme,
-      selectedAttachmentIds,
-    };
+    const workspace: StoredWorkspace = { cards, activeCardId };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(workspace));
-  }, [cards, anchors, projectSummary, theme, selectedAttachmentIds, hydrated]);
+  }, [activeCardId, cards, hydrated]);
 
   useEffect(() => {
-    fetch("/api/files", { cache: "no-store" })
-      .then((response) => (response.ok ? response.json() : Promise.reject(new Error("files"))))
-      .then((data: { items?: FileAsset[] }) => setFiles(Array.isArray(data.items) ? data.items : []))
-      .catch(() => setFiles([]));
-  }, []);
+    if (!hydrated) return;
+    window.localStorage.setItem(
+      "magic_atlas_sidebar_open",
+      String(sidebarOpen)
+    );
+  }, [hydrated, sidebarOpen]);
 
   const activeCard = cards.find((card) => card.id === activeCardId) ?? cards[0];
-  const readyFiles = files.filter((file) => file.status === "ready");
-
-  const canvasSize = useMemo(() => {
-    const maxX = Math.max(1180, ...cards.map((card) => card.x + CARD_WIDTH + 100));
-    const maxY = Math.max(1120, ...cards.map((card) => card.y + CARD_HEIGHT + 100));
-    return { width: maxX, height: maxY };
-  }, [cards]);
+  const activeLineage = activeCard ? lineageFor(cards, activeCard.id) : [];
+  const inputValue = activeCard ? cardInputs[activeCard.id] ?? "" : "";
 
   const atlasMapNodes = useMemo<MiniTreeNode[]>(
     () =>
@@ -438,66 +306,114 @@ export function KnowledgeWorkspace() {
     [cards]
   );
 
+  useEffect(() => {
+    if (!activeCard || activeCard.status !== "streaming") return;
+    cardBodyRef.current?.scrollTo({
+      top: cardBodyRef.current.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [activeCard, activeCard?.messages]);
+
   const focusCard = (cardId: string) => {
     commitCards((previous) =>
       previous.map((card) => (card.id === cardId ? { ...card, unread: false } : card))
     );
+    setTermPreview(null);
     setActiveCardId(cardId);
-    const card = cardsRef.current.find((item) => item.id === cardId);
-    if (!card || !viewportRef.current || window.innerWidth < 760) return;
-    viewportRef.current.scrollTo({
-      left: Math.max(0, card.x * zoom - 80),
-      top: Math.max(0, card.y * zoom - 80),
-      behavior: "smooth",
-    });
   };
 
-  const askCard = async (cardId: string, question: string, quotedText = "") => {
+  const createServerThread = async (
+    title: string,
+    parentThreadId?: string,
+    sourceTerm?: string
+  ) => {
+    const data = await apiJson<{ item: Thread }>("/api/threads", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, parentThreadId, sourceTerm }),
+    });
+    return data.item;
+  };
+
+  const ensureThreadForCard = async (card: KnowledgeCard) => {
+    if (card.threadId) return card.threadId;
+    const thread = await createServerThread(card.title);
+    commitCards((previous) =>
+      previous.map((item) =>
+        item.id === card.id ? { ...item, threadId: thread.id } : item
+      )
+    );
+    return thread.id;
+  };
+
+  const askCard = async (cardId: string, question: string) => {
     const normalized = question.trim();
     if (!normalized) return;
     const card = cardsRef.current.find((item) => item.id === cardId);
     if (!card || card.status === "streaming") return;
 
     const history = historyForCard(cardsRef.current, cardId);
-    const assistantId = createId("atlas_assistant");
+    const assistantId = createId("knowledge_assistant");
+    setPageError("");
     commitCards((previous) =>
       previous.map((item) =>
         item.id === cardId
           ? {
               ...item,
-              status: "streaming",
+              title: item.title === "开始探索" ? cleanTitle(normalized) : item.title,
               question: item.question || normalized,
+              status: "streaming",
               messages: [
-                ...item.messages,
-                { id: createId("atlas_user"), role: "user", content: normalized },
-                { id: assistantId, role: "assistant", content: "" },
+                ...item.messages.filter(
+                  (message) => message.id !== "glass_starter_assistant"
+                ),
+                {
+                  id: createId("knowledge_user"),
+                  role: "user",
+                  content: normalized,
+                },
+                {
+                  id: assistantId,
+                  role: "assistant",
+                  content: "",
+                },
               ],
             }
           : item
       )
     );
     setCardInputs((previous) => ({ ...previous, [cardId]: "" }));
-    setQuote("");
 
     try {
-      const response = await fetch("/api/explore/stream", {
+      const current = cardsRef.current.find((item) => item.id === cardId);
+      const response = await fetch("/api/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          question: buildExplorationPrompt(card, normalized, quotedText),
+          threadId: current?.threadId,
+          userMessage: normalized,
           locale,
-          history,
-          attachmentIds: selectedAttachmentIds,
+          clientHistory: history,
+          responseMode: "annotated",
         }),
       });
       if (!response.ok) {
         throw new Error(
-          locale === "zh" ? `知识探索服务暂时不可用（${response.status}）` : `Explore unavailable (${response.status})`
+          locale === "zh"
+            ? `知识探索服务暂时不可用（${response.status}）`
+            : `Explore unavailable (${response.status})`
         );
       }
 
       let streamError = "";
       await consumeSseStream(response, {
+        thread: ({ threadId }) => {
+          commitCards((previous) =>
+            previous.map((item) =>
+              item.id === cardId ? { ...item, threadId } : item
+            )
+          );
+        },
         token: ({ text }) => {
           commitCards((previous) =>
             previous.map((item) =>
@@ -514,6 +430,26 @@ export function KnowledgeWorkspace() {
             )
           );
         },
+        done: ({ knowledgeSources }) => {
+          commitCards((previous) =>
+            previous.map((item) =>
+              item.id === cardId
+                ? {
+                    ...item,
+                    messages: item.messages.map((message) =>
+                      message.id === assistantId
+                        ? {
+                            ...message,
+                            groundingChecked: true,
+                            knowledgeSources,
+                          }
+                        : message
+                    ),
+                  }
+                : item
+            )
+          );
+        },
         error: ({ message }) => {
           streamError = message;
         },
@@ -522,7 +458,13 @@ export function KnowledgeWorkspace() {
 
       commitCards((previous) =>
         previous.map((item) =>
-          item.id === cardId ? { ...item, status: "idle", unread: item.id !== activeCardId } : item
+          item.id === cardId
+            ? {
+                ...item,
+                status: "idle",
+                unread: item.id !== activeCardIdRef.current,
+              }
+            : item
         )
       );
     } catch (error) {
@@ -548,57 +490,80 @@ export function KnowledgeWorkspace() {
             : item
         )
       );
+      setPageError(message);
     }
   };
 
-  const startNewTopic = (event: FormEvent) => {
+  const createRootCard = async (event: FormEvent) => {
     event.preventDefault();
-    const topic = startTopic.trim();
-    if (!topic) return;
-    const root: KnowledgeCard = {
-      id: createId("atlas_root"),
-      parentId: null,
-      relation: "root",
-      title: cleanTitle(topic),
-      question: topic,
-      messages: [],
-      x: 64,
-      y: 260,
-      status: "idle",
-      unread: false,
-      createdAt: new Date().toISOString(),
-    };
-    commitCards([root]);
-    setActiveCardId(root.id);
-    setAnchors([]);
-    setProjectSummary("");
-    setStartTopic("");
-    void askCard(root.id, topic);
+    const question = newTopic.trim();
+    if (!question || creatingCard) return;
+    setCreatingCard(true);
+    setSpawnError("");
+    try {
+      const thread = await createServerThread(cleanTitle(question));
+      const root: KnowledgeCard = {
+        id: createId("knowledge_root"),
+        threadId: thread.id,
+        parentId: null,
+        relation: "root",
+        title: cleanTitle(question),
+        question,
+        messages: [],
+        status: "idle",
+        unread: false,
+        createdAt: new Date().toISOString(),
+      };
+      commitCards((previous) => [...previous, root]);
+      setActiveCardId(root.id);
+      setNewTopic("");
+      setNewTopicOpen(false);
+      void askCard(root.id, question);
+    } catch (error) {
+      setSpawnError(error instanceof Error ? error.message : "无法创建主线");
+    } finally {
+      setCreatingCard(false);
+    }
   };
 
-  const spawnCard = (draft: SpawnDraft) => {
-    const question = draft.value.trim();
-    const parent = cardsRef.current.find((card) => card.id === draft.parentId);
+  const spawnCard = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!spawnDraft || creatingCard) return;
+    const question = spawnDraft.value.trim();
+    const parent = cardsRef.current.find((card) => card.id === spawnDraft.parentId);
     if (!parent || !question) return;
-    const position = positionForCard(cardsRef.current, parent, draft.relation);
-    const child: KnowledgeCard = {
-      id: createId(`atlas_${draft.relation}`),
-      parentId: parent.id,
-      relation: draft.relation,
-      title: cleanTitle(question),
-      question,
-      messages: [],
-      x: position.x,
-      y: position.y,
-      status: "idle",
-      unread: false,
-      createdAt: new Date().toISOString(),
-    };
-    commitCards((previous) => [...previous, child]);
-    setSpawnDraft(null);
-    setActiveCardId(child.id);
-    window.setTimeout(() => focusCard(child.id), 60);
-    void askCard(child.id, question, quote);
+
+    setCreatingCard(true);
+    setSpawnError("");
+    try {
+      const parentThreadId = await ensureThreadForCard(parent);
+      const thread = await createServerThread(
+        cleanTitle(spawnDraft.sourceTerm || question),
+        parentThreadId,
+        spawnDraft.sourceTerm || cleanTitle(question)
+      );
+      const child: KnowledgeCard = {
+        id: createId(`knowledge_${spawnDraft.relation}`),
+        threadId: thread.id,
+        parentId: parent.id,
+        relation: spawnDraft.relation,
+        title: cleanTitle(spawnDraft.sourceTerm || question),
+        question,
+        messages: [],
+        status: "idle",
+        unread: false,
+        createdAt: new Date().toISOString(),
+      };
+      commitCards((previous) => [...previous, child]);
+      setSpawnDraft(null);
+      setTermPreview(null);
+      setActiveCardId(child.id);
+      void askCard(child.id, question);
+    } catch (error) {
+      setSpawnError(error instanceof Error ? error.message : "无法创建分支卡片");
+    } finally {
+      setCreatingCard(false);
+    }
   };
 
   const openTerm = async (card: KnowledgeCard, term: string) => {
@@ -632,607 +597,382 @@ export function KnowledgeWorkspace() {
     }
   };
 
-  const captureSelection = (event: MouseEvent<HTMLElement>) => {
-    const selection = window.getSelection()?.toString().replace(/\s+/g, " ").trim() ?? "";
-    if (selection.length < 4 || !event.currentTarget.contains(window.getSelection()?.anchorNode ?? null)) {
-      return;
-    }
-    setQuote(selection.slice(0, 800));
-  };
-
-  const validateUnderstanding = async () => {
-    const value = understanding.trim();
-    if (!activeCard || !value || validatingUnderstanding) return;
-    setValidatingUnderstanding(true);
-    setUnderstandingReview("");
-    try {
-      const response = await fetch("/api/explore", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: "validate",
-          locale,
-          understanding: value,
-          context: lastAssistant(activeCard),
-        }),
-      });
-      const data = (await response.json()) as { text?: string; error?: string };
-      if (!response.ok || !data.text) throw new Error(data.error || "Validation failed");
-      setUnderstandingReview(data.text);
-      const accepted =
-        data.text.includes("[认可]") || data.text.toLowerCase().includes("[accepted]");
-      if (accepted) {
-        setAnchors((previous) => [
-          {
-            id: createId("anchor"),
-            cardId: activeCard.id,
-            title: activeCard.title,
-            understanding: value,
-            review: data.text ?? "",
-            createdAt: new Date().toISOString(),
-          },
-          ...previous,
-        ]);
-        setUnderstanding("");
-      }
-    } catch (error) {
-      setUnderstandingReview(error instanceof Error ? error.message : "Validation failed");
-    } finally {
-      setValidatingUnderstanding(false);
-    }
-  };
-
-  const summarizeProject = async () => {
-    if (summarizing || cards.length === 0) return;
-    setSummarizing(true);
-    try {
-      const content = cards
-        .map((card) => `## ${card.title}\n问题：${card.question}\n${lastAssistant(card)}`)
-        .join("\n\n");
-      const response = await fetch("/api/explore", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "summarize", locale, content }),
-      });
-      const data = (await response.json()) as { text?: string; error?: string };
-      if (!response.ok || !data.text) throw new Error(data.error || "Summary failed");
-      setProjectSummary(data.text);
-    } catch (error) {
-      setProjectSummary(error instanceof Error ? error.message : "Summary failed");
-    } finally {
-      setSummarizing(false);
-    }
-  };
-
-  const deleteCard = () => {
+  const deleteCard = async () => {
     if (!deleteCardId) return;
     const ids = collectDescendantIds(cardsRef.current, deleteCardId);
-    const remaining = cardsRef.current.filter((card) => !ids.has(card.id));
-    commitCards(remaining.length ? remaining : createStarterCards());
-    setActiveCardId(remaining[0]?.id ?? "starter_root");
-    setAnchors((previous) => previous.filter((anchor) => !ids.has(anchor.cardId)));
-    setDeleteCardId(null);
+    const targets = cardsRef.current.filter((card) => ids.has(card.id)).reverse();
+    setCreatingCard(true);
+    setPageError("");
+    try {
+      for (const card of targets) {
+        if (!card.threadId) continue;
+        const response = await fetch(`/api/threads/${card.threadId}`, {
+          method: "DELETE",
+        });
+        if (!response.ok && response.status !== 404) {
+          throw new Error(`删除数据库卡片失败（${response.status}）`);
+        }
+      }
+      const remaining = cardsRef.current.filter((card) => !ids.has(card.id));
+      const next = remaining.length ? remaining : createStarterCards();
+      commitCards(next);
+      setActiveCardId(next[0].id);
+      setDeleteCardId(null);
+      setTermPreview(null);
+    } catch (error) {
+      setPageError(error instanceof Error ? error.message : "删除失败");
+    } finally {
+      setCreatingCard(false);
+    }
   };
 
-  const activeLineage = activeCard ? lineageFor(cards, activeCard.id) : [];
-  const themeLabel: Record<ThemeName, string> = {
-    parchment: "纯白",
-    midnight: "冷白",
-    sage: "浅绿",
+  const copyAnswer = async () => {
+    const answer = lastAssistant(activeCard);
+    if (!answer) return;
+    await navigator.clipboard.writeText(answer.replace(/\[\[|\]\]/g, ""));
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1400);
   };
 
   return (
-    <div className={`atlas-workspace atlas-theme-${theme}`}>
-      <header className="atlas-topbar">
-        <div className="atlas-brand">
-          <div className="atlas-mark">
-            <Network size={18} />
-          </div>
+    <div className={`knowledge-stage ${sidebarOpen ? "is-sidebar-open" : ""}`}>
+      <aside className="knowledge-stage-rail" aria-label="知识探索工具">
+        <button
+          type="button"
+          className="knowledge-stage-sidebar-toggle"
+          onClick={() => setSidebarOpen((value) => !value)}
+          title={sidebarOpen ? "隐藏侧边栏" : "打开侧边栏"}
+          aria-label={sidebarOpen ? "隐藏侧边栏" : "打开侧边栏"}
+        >
+          <PanelLeft size={21} />
+          <span>{sidebarOpen ? "隐藏侧边栏" : "打开侧边栏"}</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setSpawnError("");
+            setNewTopicOpen(true);
+          }}
+          title="新建主线"
+          aria-label="新建主线"
+        >
+          <Plus size={21} />
+          <span>新建项目</span>
+        </button>
+        <Link href="/files" title="上传文档" aria-label="上传文档">
+          <FileUp size={20} />
+          <span>上传文档</span>
+        </Link>
+        <Link href="/" title="产品首页" aria-label="产品首页">
+          <Home size={20} />
+          <span>产品首页</span>
+        </Link>
+
+        <section className="knowledge-stage-projects" aria-label="本地项目">
           <div>
-            <p>Magic Atlas</p>
-            <span>结构化知识探索</span>
+            <Network size={14} />
+            <span>知识卡片</span>
+            <i>{cards.length}</i>
           </div>
-        </div>
-
-        <div className="atlas-breadcrumb" aria-label="当前知识路径">
-          {activeLineage.map((card, index) => (
-            <button key={card.id} type="button" onClick={() => focusCard(card.id)}>
-              {index > 0 ? <ChevronRight size={13} /> : null}
-              <span>{card.title}</span>
-            </button>
-          ))}
-        </div>
-
-        <div className="atlas-toolbar">
-          <Link href="/chat" className="atlas-icon-button" aria-label="返回线性对话" title="返回线性对话">
-            <ArrowLeft size={17} />
-          </Link>
-          <button
-            type="button"
-            className="atlas-icon-button"
-            onClick={() => setZoom((value) => Math.max(0.65, Number((value - 0.1).toFixed(2))))}
-            aria-label="缩小"
-          >
-            <Minus size={16} />
-          </button>
-          <span className="atlas-zoom">{Math.round(zoom * 100)}%</span>
-          <button
-            type="button"
-            className="atlas-icon-button"
-            onClick={() => setZoom((value) => Math.min(1.1, Number((value + 0.1).toFixed(2))))}
-            aria-label="放大"
-          >
-            <Plus size={16} />
-          </button>
-        </div>
-      </header>
-
-      <div className="atlas-shell">
-        <aside className="atlas-sidebar">
-          <form className="atlas-new-topic" onSubmit={startNewTopic}>
-            <label htmlFor="atlas-topic">开启一条新主线</label>
-            <div>
-              <input
-                id="atlas-topic"
-                value={startTopic}
-                onChange={(event) => setStartTopic(event.target.value)}
-                placeholder="输入想彻底搞懂的问题…"
-              />
-              <button type="submit" aria-label="开始探索" disabled={!startTopic.trim()}>
-                <ArrowRight size={16} />
-              </button>
-            </div>
-          </form>
-
-          <section className="atlas-side-section">
-            <div className="atlas-section-title">
-              <span>
-                <Map size={15} />
-                卡片树
-              </span>
-              <small>{cards.length}</small>
-            </div>
-            <div className="atlas-tree">
-              {cards.map((card) => (
-                <button
-                  key={card.id}
-                  type="button"
-                  className={card.id === activeCardId ? "is-active" : ""}
-                  onClick={() => focusCard(card.id)}
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    commitCards((previous) =>
-                      previous.map((item) =>
-                        item.id === card.id ? { ...item, unread: !item.unread } : item
-                      )
-                    );
-                  }}
-                  style={{ paddingLeft: `${14 + Math.max(0, lineageFor(cards, card.id).length - 1) * 13}px` }}
-                  title="右键切换未读状态"
-                >
-                  <span className={`atlas-tree-dot relation-${card.relation}`} />
-                  <span>{card.title}</span>
-                  {card.unread ? <i aria-label="未读" /> : null}
-                </button>
-              ))}
-            </div>
-          </section>
-
-          <section className="atlas-side-section">
-            <div className="atlas-section-title">
-              <span>
-                <FileText size={15} />
-                文档上下文
-              </span>
-              <Link href="/files">管理</Link>
-            </div>
-            {readyFiles.length ? (
-              <div className="atlas-file-list">
-                {readyFiles.slice(0, 5).map((file) => {
-                  const checked = selectedAttachmentIds.includes(file.id);
-                  return (
-                    <label key={file.id} className={checked ? "is-checked" : ""}>
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={(event) => {
-                          setSelectedAttachmentIds((previous) =>
-                            event.target.checked
-                              ? [...previous, file.id]
-                              : previous.filter((id) => id !== file.id)
-                          );
-                        }}
-                      />
-                      <span>{file.fileName}</span>
-                    </label>
-                  );
-                })}
-              </div>
-            ) : (
-              <Link href="/files" className="atlas-empty-link">
-                导入论文或资料
-                <ArrowUpRight size={13} />
-              </Link>
-            )}
-          </section>
-
-          <section className="atlas-side-section atlas-summary">
-            <div className="atlas-section-title">
-              <span>
-                <BookOpen size={15} />
-                项目摘要
-              </span>
-            </div>
-            {projectSummary ? (
-              <div className="atlas-summary-copy">
-                <AnnotatedMarkdown content={projectSummary} onTerm={() => {}} />
-              </div>
-            ) : (
-              <p>把散开的卡片重新压缩成一条可复习的主线。</p>
-            )}
-            <button type="button" onClick={() => void summarizeProject()} disabled={summarizing}>
-              {summarizing ? <Loader2 className="animate-spin" size={14} /> : <Sparkles size={14} />}
-              {projectSummary ? "重新总结" : "智能总结"}
-            </button>
-          </section>
-
-          <div className="atlas-theme-switcher">
-            <span>主题</span>
-            {(Object.keys(themeLabel) as ThemeName[]).map((item) => (
+          <nav>
+            {cards.map((card) => (
               <button
-                key={item}
+                key={card.id}
                 type="button"
-                className={theme === item ? "is-active" : ""}
-                onClick={() => setTheme(item)}
-                aria-label={`切换到${themeLabel[item]}主题`}
-                title={themeLabel[item]}
+                className={card.id === activeCardId ? "is-active" : ""}
+                onClick={() => focusCard(card.id)}
               >
-                <i className={`theme-${item}`} />
+                <span className={`relation-${card.relation}`} />
+                <strong>{card.title}</strong>
+                {card.unread ? <i /> : null}
               </button>
             ))}
+          </nav>
+        </section>
+
+        <div className="knowledge-stage-rail-spacer" />
+        <Link href="/settings" title="设置" aria-label="设置">
+          <Settings size={20} />
+          <span>设置</span>
+        </Link>
+        <div className="knowledge-stage-account" title={user?.name || "账户"}>
+          <div className="knowledge-stage-avatar">
+            {(user?.name || "M").slice(0, 1).toUpperCase()}
           </div>
-        </aside>
+          <span>{user?.name || "账户"}</span>
+        </div>
+      </aside>
 
-        <main className="atlas-viewport" ref={viewportRef}>
-          <div
-            className="atlas-canvas-sizer"
-            style={
-              {
-                width: canvasSize.width * zoom,
-                height: canvasSize.height * zoom,
-                "--mobile-height": `${cards.length * (CARD_HEIGHT + 32) + 48}px`,
-              } as CSSProperties
-            }
-          >
-            <div
-              className="atlas-canvas"
-              style={{
-                width: canvasSize.width,
-                height: canvasSize.height,
-                transform: `scale(${zoom})`,
-              }}
+      <main className="knowledge-stage-main">
+        <nav className="knowledge-stage-breadcrumb" aria-label="当前知识路径">
+          {activeLineage.map((card, index) => (
+            <button key={card.id} type="button" onClick={() => focusCard(card.id)}>
+              {index > 0 ? <span>/</span> : null}
+              {card.title}
+            </button>
+          ))}
+        </nav>
+
+        <section className="knowledge-stage-stack" aria-live="polite">
+          <div className="knowledge-stage-back-card is-far" aria-hidden="true" />
+          <div className="knowledge-stage-back-card is-near" aria-hidden="true" />
+
+          {activeCard ? (
+            <article
+              key={activeCard.id}
+              className={`knowledge-stage-card relation-${activeCard.relation}`}
             >
-              <div className="atlas-grid" />
-
-              {cards.map((card, cardIndex) => {
-                const preview = termPreview?.cardId === card.id ? termPreview : null;
-                const isActive = card.id === activeCardId;
-                const inputValue = cardInputs[card.id] ?? "";
-                return (
-                  <article
-                    key={card.id}
-                    className={`knowledge-card relation-${card.relation} ${isActive ? "is-active" : ""}`}
-                    style={
-                      {
-                        left: card.x,
-                        top: card.y,
-                        "--mobile-top": `${cardIndex * (CARD_HEIGHT + 32) + 24}px`,
-                      } as CSSProperties
-                    }
+              <header className="knowledge-stage-card-header">
+                <div>
+                  <span>
+                    <RelationIcon relation={activeCard.relation} />
+                    {relationMeta[activeCard.relation].label}
+                  </span>
+                  <h1>{activeCard.title}</h1>
+                </div>
+                <div className="knowledge-stage-card-tools">
+                  <button
+                    type="button"
+                    onClick={() => void copyAnswer()}
+                    title="复制回答"
+                    aria-label="复制回答"
                   >
-                    <header className="knowledge-card-header">
-                      <div className="knowledge-card-index">
-                        <span>
-                          <RelationIcon relation={card.relation} />
-                        </span>
-                        {String(cardIndex + 1).padStart(2, "0")}
-                      </div>
-                      <button
-                        type="button"
-                        className="knowledge-card-heading"
-                        onClick={() => focusCard(card.id)}
-                        aria-label={`聚焦卡片：${card.title}`}
-                      >
-                        <small>{relationMeta[card.relation].label}</small>
-                        <h2>{card.title}</h2>
-                      </button>
-                      <button
-                        type="button"
-                        className="knowledge-card-delete"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setDeleteCardId(card.id);
-                        }}
-                        aria-label={`删除${card.title}`}
-                      >
-                        <Trash2 size={15} />
-                      </button>
-                    </header>
+                    {copied ? <Check size={17} /> : <Copy size={17} />}
+                  </button>
+                  <button type="button" title="收藏卡片" aria-label="收藏卡片">
+                    <Bookmark size={17} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDeleteCardId(activeCard.id)}
+                    title="删除卡片"
+                    aria-label="删除卡片"
+                  >
+                    <Trash2 size={17} />
+                  </button>
+                </div>
+              </header>
 
-                    <div className="knowledge-card-body">
-                      {card.messages.length === 0 && card.status !== "streaming" ? (
-                        <div className="knowledge-empty-card">
-                          <HelpCircle size={26} />
-                          <p>这张卡片还没有回答。</p>
-                        </div>
-                      ) : null}
-                      {card.messages.map((message) =>
-                        message.role === "user" ? (
-                          <div key={message.id} className="knowledge-question">
-                            <span>Q</span>
-                            <p>{message.content}</p>
+              <div className="knowledge-stage-card-body" ref={cardBodyRef}>
+                {activeCard.messages.length === 0 ? (
+                  <div className="knowledge-stage-empty">
+                    <Network size={28} />
+                    <h2>准备建立这张知识卡片</h2>
+                    <p>在下方输入问题，回答会在这里展开。</p>
+                  </div>
+                ) : null}
+
+                {activeCard.messages.map((message) =>
+                  message.role === "user" ? (
+                    <div key={message.id} className="knowledge-stage-question">
+                      {message.content}
+                    </div>
+                  ) : (
+                    <section key={message.id} className="knowledge-stage-answer">
+                      <div className="knowledge-stage-thinking">
+                        {activeCard.status === "streaming" && !message.content ? (
+                          <>
+                            <Loader2 className="animate-spin" size={15} />
+                            正在读取上下文与知识库
+                          </>
+                        ) : (
+                          <>
+                            <span />
+                            AI 回答
+                          </>
+                        )}
+                      </div>
+                      <AnnotatedMarkdown
+                        content={message.content || "正在展开知识结构…"}
+                        onTerm={(term) => void openTerm(activeCard, term)}
+                      />
+                      {message.groundingChecked ? (
+                        message.knowledgeSources?.length ? (
+                          <div className="knowledge-stage-grounding is-hit">
+                            <Check size={14} />
+                            <div>
+                              <strong>已引用数据库</strong>
+                              <span>{message.knowledgeSources.join(" · ")}</span>
+                            </div>
                           </div>
                         ) : (
-                          <div
-                            key={message.id}
-                            className="knowledge-answer"
-                            onMouseUp={captureSelection}
-                          >
-                            <AnnotatedMarkdown
-                              content={message.content || "正在展开知识结构…"}
-                              onTerm={(term) => void openTerm(card, term)}
-                            />
+                          <div className="knowledge-stage-grounding is-miss">
+                            <Network size={14} />
+                            <div>
+                              <strong>本次未命中知识库</strong>
+                              <span>回答来自通用模型，没有伪造数据库引用</span>
+                            </div>
                           </div>
                         )
-                      )}
-
-                      {preview ? (
-                        <div className="atlas-term-preview">
-                          <div>
-                            <span>术语预览</span>
-                            <button type="button" onClick={() => setTermPreview(null)} aria-label="关闭预览">
-                              <X size={14} />
-                            </button>
-                          </div>
-                          <h3>{preview.term}</h3>
-                          {preview.loading ? (
-                            <p className="atlas-preview-loading">
-                              <Loader2 className="animate-spin" size={14} />
-                              正在建立上下文解释…
-                            </p>
-                          ) : (
-                            <p>{preview.error || preview.text}</p>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setSpawnDraft({
-                                parentId: card.id,
-                                relation: "child",
-                                value: `深入解释：${preview.term}`,
-                              })
-                            }
-                          >
-                            <ArrowUpRight size={14} />
-                            展开为子卡片
-                          </button>
-                        </div>
                       ) : null}
-                    </div>
+                    </section>
+                  )
+                )}
 
-                    <div className="knowledge-card-footer">
-                      {quote && isActive ? (
-                        <div className="atlas-quote-chip">
-                          <span>已引用：{quote}</span>
-                          <button type="button" onClick={() => setQuote("")} aria-label="取消引用">
-                            <X size={12} />
-                          </button>
-                        </div>
-                      ) : null}
-                      <form
-                        className="knowledge-followup"
-                        onSubmit={(event) => {
-                          event.preventDefault();
-                          void askCard(card.id, inputValue, quote);
-                        }}
+                {termPreview?.cardId === activeCard.id ? (
+                  <aside className="knowledge-term-popover">
+                    <div>
+                      <span>关键词预览</span>
+                      <button
+                        type="button"
+                        onClick={() => setTermPreview(null)}
+                        aria-label="关闭关键词预览"
                       >
-                        <input
-                          value={inputValue}
-                          onChange={(event) =>
-                            setCardInputs((previous) => ({
-                              ...previous,
-                              [card.id]: event.target.value,
-                            }))
-                          }
-                          placeholder="在当前卡片继续追问…"
-                          disabled={card.status === "streaming"}
-                        />
-                        <button
-                          type="submit"
-                          disabled={!inputValue.trim() || card.status === "streaming"}
-                          aria-label="发送追问"
-                        >
-                          {card.status === "streaming" ? (
-                            <Loader2 className="animate-spin" size={15} />
-                          ) : (
-                            <Send size={15} />
-                          )}
-                        </button>
-                      </form>
-
-                      <div className="knowledge-spawn-actions">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setSpawnDraft({
-                              parentId: card.id,
-                              relation: "child",
-                              value: "",
-                            })
-                          }
-                        >
-                          <ArrowUpRight size={15} />
-                          <span>子卡片</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setSpawnDraft({
-                              parentId: card.id,
-                              relation: "related",
-                              value: "",
-                            })
-                          }
-                        >
-                          <ArrowRight size={15} />
-                          <span>关联</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setSpawnDraft({
-                              parentId: card.id,
-                              relation: "branch",
-                              value: "",
-                            })
-                          }
-                        >
-                          <GitBranch size={15} />
-                          <span>分支</span>
-                        </button>
-                      </div>
+                        <X size={15} />
+                      </button>
                     </div>
-                  </article>
-                );
-              })}
-            </div>
-          </div>
-        </main>
+                    <h2>{termPreview.term}</h2>
+                    {termPreview.loading ? (
+                      <p className="is-loading">
+                        <Loader2 className="animate-spin" size={15} />
+                        正在结合当前卡片解释…
+                      </p>
+                    ) : (
+                      <p>{termPreview.error || termPreview.text}</p>
+                    )}
+                    <button
+                      type="button"
+                      disabled={termPreview.loading}
+                      onClick={() => {
+                        setSpawnError("");
+                        setSpawnDraft({
+                          parentId: activeCard.id,
+                          relation: "child",
+                          sourceTerm: termPreview.term,
+                          value: `请结合上游内容，深入解释“${termPreview.term}”。`,
+                        });
+                      }}
+                    >
+                      <ArrowUpRight size={15} />
+                      用新卡片追问
+                    </button>
+                    <small>确认创建后，右侧导航才会出现新节点</small>
+                  </aside>
+                ) : null}
+              </div>
+            </article>
+          ) : null}
+        </section>
 
-        <aside className="atlas-inspector">
-          <div className="atlas-inspector-heading">
-            <div>
-              <span>思维宇宙</span>
-              <h2>{activeCard?.title ?? "未选择卡片"}</h2>
-            </div>
-            <BrainCircuit size={22} />
-          </div>
-
+        <aside className="knowledge-stage-navigator">
           <MiniTreeMap
             nodes={atlasMapNodes}
             activeId={activeCardId}
             onSelect={focusCard}
             label="卡片导航"
-            className="atlas-mini-tree"
           />
-
-          {activeCard ? (
-            <>
-              <div className="atlas-context-rule">
-                <div>
-                  <RelationIcon relation={activeCard.relation} />
-                </div>
-                <p>
-                  <strong>{relationMeta[activeCard.relation].label}</strong>
-                  {activeCard.relation === "child"
-                    ? "读取上游标题与回答，聚焦一个概念。"
-                    : activeCard.relation === "related"
-                      ? "保留背景主题，横向比较相邻知识。"
-                      : activeCard.relation === "branch"
-                        ? "继承分支点之前的完整推理脉络。"
-                        : "建立整个项目的核心问题与共同背景。"}
-                </p>
-              </div>
-
-              <section className="atlas-understanding">
-                <label htmlFor="atlas-understanding">用自己的话说说你的理解</label>
-                <textarea
-                  id="atlas-understanding"
-                  value={understanding}
-                  onChange={(event) => setUnderstanding(event.target.value)}
-                  placeholder="例如：纠缠提供的是相关性资源，而不是可以控制的远程信号…"
-                  rows={5}
-                />
-                <button
-                  type="button"
-                  onClick={() => void validateUnderstanding()}
-                  disabled={!understanding.trim() || validatingUnderstanding}
-                >
-                  {validatingUnderstanding ? (
-                    <Loader2 className="animate-spin" size={14} />
-                  ) : (
-                    <Sparkles size={14} />
-                  )}
-                  让 AI 校验并收录
-                </button>
-                {understandingReview ? (
-                  <p
-                    className={
-                      understandingReview.includes("[认可]") ||
-                      understandingReview.toLowerCase().includes("[accepted]")
-                        ? "is-accepted"
-                        : "is-revise"
-                    }
-                  >
-                    {understandingReview}
-                  </p>
-                ) : null}
-              </section>
-            </>
-          ) : null}
-
-          <section className="atlas-anchor-list">
-            <div className="atlas-section-title">
-              <span>
-                <BrainCircuit size={15} />
-                我的知识锚点
-              </span>
-              <small>{anchors.length}</small>
-            </div>
-            {anchors.length ? (
-              anchors.map((anchor) => (
-                <button key={anchor.id} type="button" onClick={() => focusCard(anchor.cardId)}>
-                  <span>
-                    <Check size={12} />
-                  </span>
-                  <div>
-                    <strong>{anchor.title}</strong>
-                    <p>{anchor.understanding}</p>
-                  </div>
-                </button>
-              ))
-            ) : (
-              <div className="atlas-empty-anchors">
-                <BrainCircuit size={24} />
-                <p>经过你复述并被校验的理解，会在这里形成个人知识锚点。</p>
-              </div>
-            )}
-          </section>
+          <p>节点由卡片关系自动生成</p>
         </aside>
-      </div>
 
-      {spawnDraft ? (
-        <div className="atlas-modal-backdrop" role="presentation">
+        {activeCard ? (
+          <div className="knowledge-stage-branch-actions">
+            {(["child", "related", "branch"] as const).map((relation) => (
+              <button
+                key={relation}
+                type="button"
+                onClick={() => {
+                  setSpawnError("");
+                  setSpawnDraft({
+                    parentId: activeCard.id,
+                    relation,
+                    value: "",
+                  });
+                }}
+                title={relationMeta[relation].prompt}
+              >
+                <RelationIcon relation={relation} />
+                <span>{relationMeta[relation].label.split(" · ")[0]}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        {activeCard ? (
           <form
-            className="atlas-spawn-modal"
+            className="knowledge-stage-composer"
             onSubmit={(event) => {
               event.preventDefault();
-              spawnCard(spawnDraft);
+              void askCard(activeCard.id, inputValue);
             }}
           >
-            <div className={`atlas-modal-relation relation-${spawnDraft.relation}`}>
+            <span className="knowledge-stage-model">AI</span>
+            <input
+              value={inputValue}
+              onChange={(event) =>
+                setCardInputs((previous) => ({
+                  ...previous,
+                  [activeCard.id]: event.target.value,
+                }))
+              }
+              placeholder="在当前卡片继续提问…"
+              disabled={activeCard.status === "streaming"}
+            />
+            <button
+              type="submit"
+              disabled={!inputValue.trim() || activeCard.status === "streaming"}
+              aria-label="发送"
+            >
+              {activeCard.status === "streaming" ? (
+                <Loader2 className="animate-spin" size={18} />
+              ) : (
+                <Send size={18} />
+              )}
+            </button>
+          </form>
+        ) : null}
+
+        {pageError ? (
+          <div className="knowledge-stage-error">
+            <span>{pageError}</span>
+            <button type="button" onClick={() => setPageError("")} aria-label="关闭错误">
+              <X size={14} />
+            </button>
+          </div>
+        ) : null}
+      </main>
+
+      {newTopicOpen ? (
+        <div className="knowledge-stage-modal-backdrop">
+          <form className="knowledge-stage-modal" onSubmit={createRootCard}>
+            <div className="knowledge-stage-modal-icon">
+              <Plus size={19} />
+            </div>
+            <span>新的主线卡片</span>
+            <h2>想彻底搞懂什么？</h2>
+            <textarea
+              autoFocus
+              value={newTopic}
+              onChange={(event) => setNewTopic(event.target.value)}
+              placeholder="输入一个核心问题…"
+              rows={4}
+            />
+            {spawnError ? <p className="knowledge-stage-modal-error">{spawnError}</p> : null}
+            <div>
+              <button type="button" onClick={() => setNewTopicOpen(false)}>
+                取消
+              </button>
+              <button type="submit" disabled={!newTopic.trim() || creatingCard}>
+                {creatingCard ? <Loader2 className="animate-spin" size={15} /> : null}
+                创建主线
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
+      {spawnDraft ? (
+        <div className="knowledge-stage-modal-backdrop">
+          <form className="knowledge-stage-modal" onSubmit={spawnCard}>
+            <div className={`knowledge-stage-modal-icon relation-${spawnDraft.relation}`}>
               <RelationIcon relation={spawnDraft.relation} />
             </div>
-            <div>
-              <span>{relationMeta[spawnDraft.relation].label}</span>
-              <h2>
-                {spawnDraft.relation === "child"
-                  ? "向下钻进一个概念"
-                  : spawnDraft.relation === "related"
-                    ? "从这里横向发散"
-                    : "继承上下文，另起路线"}
-              </h2>
-            </div>
+            <span>{relationMeta[spawnDraft.relation].label}</span>
+            <h2>{relationMeta[spawnDraft.relation].prompt}</h2>
+            {spawnDraft.sourceTerm ? (
+              <div className="knowledge-stage-source-term">
+                来源关键词：{spawnDraft.sourceTerm}
+              </div>
+            ) : null}
             <textarea
               autoFocus
               value={spawnDraft.value}
@@ -1241,22 +981,17 @@ export function KnowledgeWorkspace() {
                   previous ? { ...previous, value: event.target.value } : previous
                 )
               }
-              placeholder={
-                spawnDraft.relation === "child"
-                  ? "想深入理解哪个概念？"
-                  : spawnDraft.relation === "related"
-                    ? "想比较或联系什么？"
-                    : "从哪个新问题继续？"
-              }
+              placeholder="输入这张新卡片要探索的问题…"
               rows={4}
             />
-            <div className="atlas-modal-actions">
+            {spawnError ? <p className="knowledge-stage-modal-error">{spawnError}</p> : null}
+            <div>
               <button type="button" onClick={() => setSpawnDraft(null)}>
                 取消
               </button>
-              <button type="submit" disabled={!spawnDraft.value.trim()}>
-                创建卡片
-                <ArrowRight size={15} />
+              <button type="submit" disabled={!spawnDraft.value.trim() || creatingCard}>
+                {creatingCard ? <Loader2 className="animate-spin" size={15} /> : null}
+                确认创建新卡片
               </button>
             </div>
           </form>
@@ -1264,19 +999,27 @@ export function KnowledgeWorkspace() {
       ) : null}
 
       {deleteCardId ? (
-        <div className="atlas-modal-backdrop" role="presentation">
-          <div className="atlas-delete-modal" role="dialog" aria-modal="true" aria-labelledby="delete-title">
-            <div className="atlas-delete-icon">
-              <Trash2 size={20} />
+        <div className="knowledge-stage-modal-backdrop">
+          <div className="knowledge-stage-modal">
+            <div className="knowledge-stage-modal-icon is-danger">
+              <Trash2 size={19} />
             </div>
             <span>确认操作</span>
-            <h2 id="delete-title">删除这张卡片及其子卡片？</h2>
-            <p>卡片中的对话和对应知识锚点会从当前设备移除，无法撤销。</p>
-            <div className="atlas-modal-actions">
+            <h2>删除这张卡片及其下游分支？</h2>
+            <p className="knowledge-stage-delete-copy">
+              对应数据库线程和消息也会一起删除，无法撤销。
+            </p>
+            <div>
               <button type="button" onClick={() => setDeleteCardId(null)}>
                 取消
               </button>
-              <button type="button" className="is-danger" onClick={deleteCard}>
+              <button
+                type="button"
+                className="is-danger"
+                onClick={() => void deleteCard()}
+                disabled={creatingCard}
+              >
+                {creatingCard ? <Loader2 className="animate-spin" size={15} /> : null}
                 确认删除
               </button>
             </div>

@@ -1,6 +1,10 @@
 import { assertSession } from "@/features/auth/session.server";
 import { generateWithGatewayStream } from "@/lib/ai/model-gateway";
 import { normalizeChatHistory } from "@/lib/agent/history";
+import {
+  extractKnowledgeSourceTitles,
+  retrieveOptionalKnowledge,
+} from "@/lib/agent/knowledge-retrieval";
 import { supabaseDb } from "@/lib/data/supabase-db";
 import { ChatHistoryMessage, Locale } from "@/lib/domain/types";
 
@@ -12,6 +16,7 @@ const EXPLORE_SYSTEM_PROMPT =
 
 type ExploreStreamBody = {
   question?: string;
+  searchQuery?: string;
   locale?: Locale;
   history?: ChatHistoryMessage[];
   attachmentIds?: string[];
@@ -35,9 +40,16 @@ export async function POST(req: Request) {
     const attachmentIds = Array.isArray(body.attachmentIds)
       ? body.attachmentIds.filter((item): item is string => typeof item === "string").slice(0, 8)
       : [];
-    const insights = attachmentIds.length
-      ? await supabaseDb.listFileInsightsByIds(session.id, attachmentIds)
-      : [];
+    const [insights, retrievedKnowledge] = await Promise.all([
+      attachmentIds.length
+        ? supabaseDb.listFileInsightsByIds(session.id, attachmentIds)
+        : Promise.resolve([]),
+      retrieveOptionalKnowledge({
+        query: body.searchQuery?.trim() || question,
+        search: (query) => supabaseDb.searchTrickChunks(query),
+      }),
+    ]);
+    const knowledgeSources = extractKnowledgeSourceTitles(retrievedKnowledge);
     const fileContext = insights
       .map((insight) => `${insight.kind}: ${insight.content}`)
       .join("\n")
@@ -58,7 +70,13 @@ export async function POST(req: Request) {
               userMessage: question,
               history: normalizeChatHistory(body.history),
               fileContext,
+              retrievedKnowledge,
               systemPrompt: EXPLORE_SYSTEM_PROMPT,
+              responseFormatPrompt: knowledgeSources.length
+                ? locale === "zh"
+                  ? `本次已命中应用知识库。优先使用检索内容，并在回答末尾单独添加“知识库依据：${knowledgeSources.join("；")}”。只能列出这些真实标题。`
+                  : `Use the matched app knowledge base and end with "Database grounding: ${knowledgeSources.join("; ")}". List only these exact titles.`
+                : undefined,
             },
             (text) => {
               if (text) write("token", { text });
@@ -71,6 +89,7 @@ export async function POST(req: Request) {
             recommendationRefreshed: false,
             refreshReason: "keep_previous",
             goalTopic: null,
+            knowledgeSources,
           });
         } catch (error) {
           write("error", {

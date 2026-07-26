@@ -1,5 +1,5 @@
-import { ChatWorkspace } from "@/features/chat-agent/ChatWorkspace";
+import { redirect } from "next/navigation";
 
 export default function ChatPage() {
-  return <ChatWorkspace />;
+  redirect("/explore");
 }

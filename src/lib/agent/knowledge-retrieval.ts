@@ -6,6 +6,14 @@ export type KnowledgeSearch = (
   query: string
 ) => Promise<Record<string, unknown>[]>;
 
+export function extractKnowledgeSourceTitles(context: string): string[] {
+  return context
+    .split(/\n\n---\n\n/)
+    .map((chunk) => chunk.match(/^([^\n：]{1,120})：\n/)?.[1]?.trim() ?? "")
+    .filter((title, index, titles) => Boolean(title) && titles.indexOf(title) === index)
+    .slice(0, 5);
+}
+
 function resolveMinSimilarity(value?: number) {
   if (Number.isFinite(value)) return Number(value);
   const configured = Number(process.env.RAG_MIN_SIMILARITY);
@@ -69,7 +77,7 @@ export async function retrieveOptionalKnowledge(params: {
     const minSimilarity = resolveMinSimilarity(params.minSimilarity);
     const chunks = rows
       .map((row) => formatRelevantChunk(row, minSimilarity))
-      .filter((chunk): chunk is string => Boolean(chunk))
+      .filter((chunk): chunk is string => Boolean(chunk));
     const mode = String(rows[0]?.searchMode || rows[0]?.search_mode || "unknown");
     if (chunks.length > 0) {
       console.info("Optional knowledge retrieval hit", {

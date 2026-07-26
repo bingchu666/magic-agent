@@ -70,6 +70,7 @@ export async function POST(req: Request) {
             locale: body.locale === "en" ? "en" : "zh",
             attachmentIds: Array.isArray(body.attachmentIds) ? body.attachmentIds : [],
             clientHistory: normalizeChatHistory(body.clientHistory),
+            responseMode: body.responseMode === "annotated" ? "annotated" : "plain",
             userId: session.id,
             onThreadReady: (threadId) => {
               threadIdFromCallback = threadId;
@@ -118,6 +119,7 @@ export async function POST(req: Request) {
             recommendationRefreshed: result.output.recommendationRefreshed,
             refreshReason: result.output.refreshReason,
             goalTopic: result.output.goalTopic,
+            knowledgeSources: result.output.knowledgeSources,
           });
           console.info("Chat stream completed", {
             provider: result.output.provider,

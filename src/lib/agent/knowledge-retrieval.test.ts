@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { retrieveOptionalKnowledge } from "@/lib/agent/knowledge-retrieval";
+import {
+  extractKnowledgeSourceTitles,
+  retrieveOptionalKnowledge,
+} from "@/lib/agent/knowledge-retrieval";
 
 describe("retrieveOptionalKnowledge", () => {
   afterEach(() => {
@@ -64,5 +67,19 @@ describe("retrieveOptionalKnowledge", () => {
       "Optional knowledge retrieval hit",
       expect.objectContaining({ matches: 1 })
     );
+  });
+
+  it("exposes only the real titles used for database grounding", () => {
+    const context = [
+      "法式落下：\n硬币保留在原手。",
+      "纸牌控制：\n控制选牌回到牌顶。",
+      "法式落下：\n重复内容不会重复引用。",
+    ].join("\n\n---\n\n");
+
+    expect(extractKnowledgeSourceTitles(context)).toEqual([
+      "法式落下",
+      "纸牌控制",
+    ]);
+    expect(extractKnowledgeSourceTitles("通用模型回答，没有数据库格式")).toEqual([]);
   });
 });

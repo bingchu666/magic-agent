@@ -1,7 +1,10 @@
 import { ChatHistoryMessage, Locale } from "@/lib/domain/types";
 import { supabaseDb } from "@/lib/data/supabase-db";
 import { stripMarkdown } from "@/lib/domain/utils";
-import { retrieveOptionalKnowledge } from "@/lib/agent/knowledge-retrieval";
+import {
+  extractKnowledgeSourceTitles,
+  retrieveOptionalKnowledge,
+} from "@/lib/agent/knowledge-retrieval";
 
 const OPTIONAL_CONTEXT_TIMEOUT_MS = 800;
 
@@ -89,6 +92,7 @@ export async function buildContext(params: {
     history,
     fileContext,
     retrievedKnowledge,
+    knowledgeSources: extractKnowledgeSourceTitles(retrievedKnowledge),
     usedFileInsights: uniqueInsights,
   };
 }

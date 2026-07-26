@@ -16,9 +16,13 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const session = await assertSession(req);
-    let body: { title?: string } = {};
+    let body: { title?: string; parentThreadId?: string; sourceTerm?: string } = {};
     try {
-      body = (await req.json()) as { title?: string };
+      body = (await req.json()) as {
+        title?: string;
+        parentThreadId?: string;
+        sourceTerm?: string;
+      };
     } catch {
       body = {};
     }
@@ -28,11 +32,42 @@ export async function POST(req: Request) {
       ? "新对话"
       : "New Thread";
 
-    const thread = await supabaseDb.createThread(session.id, title);
+    const parentThreadId =
+      typeof body.parentThreadId === "string" && body.parentThreadId.trim()
+        ? body.parentThreadId.trim()
+        : null;
+    const sourceTerm =
+      typeof body.sourceTerm === "string" && body.sourceTerm.trim()
+        ? body.sourceTerm.trim().slice(0, 160)
+        : null;
+    if (parentThreadId) {
+      const parent = await supabaseDb.getThread(parentThreadId);
+      if (!parent || parent.userId !== session.id) {
+        return jsonError("PARENT_THREAD_NOT_FOUND", 404);
+      }
+    }
+
+    const created = await supabaseDb.createThread(session.id, title);
+    const thread = {
+      ...created,
+      parentThreadId,
+      sourceTerm,
+    };
+    if (parentThreadId) {
+      await supabaseDb.createEvent({
+        userId: session.id,
+        name: "thread_branch_created",
+        payload: {
+          childThreadId: thread.id,
+          parentThreadId,
+          sourceTerm,
+        },
+      });
+    }
     await supabaseDb.createEvent({
       userId: session.id,
       name: "thread_created",
-      payload: { threadId: thread.id },
+      payload: { threadId: thread.id, parentThreadId, sourceTerm },
     });
     return jsonOk({ item: thread }, { status: 201 });
   } catch (error) {

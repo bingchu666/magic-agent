@@ -13,6 +13,8 @@ export type Thread = {
   id: string;
   userId: string;
   title: string;
+  parentThreadId?: string | null;
+  sourceTerm?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -195,6 +197,7 @@ export type AgentOutput = {
   refreshReason: "learning_intent" | "topic_shift" | "keep_previous";
   goalTopic: string | null;
   usedFileInsights: FileInsight[];
+  knowledgeSources: string[];
   safety: SafetyResult;
   provider: "deepseek" | "openai" | "rule";
 };
@@ -232,6 +235,7 @@ export type ChatSsePayloadMap = {
     recommendationRefreshed: boolean;
     refreshReason: AgentOutput["refreshReason"];
     goalTopic: string | null;
+    knowledgeSources: string[];
   };
   error: { message: string };
 };

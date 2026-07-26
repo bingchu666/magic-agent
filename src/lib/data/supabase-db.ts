@@ -143,13 +143,49 @@ export const supabaseDb = {
 
   async listThreads(userId: string): Promise<Thread[]> {
     const supabase = await sc();
-    const { data, error } = await supabase
-      .from("threads")
-      .select("*")
-      .eq("user_id", userId)
-      .order("updated_at", { ascending: false });
-    assertNoError(error, "Failed to list threads");
-    return fromDatabaseRows<Thread>(data);
+    const [threadResult, relationResult] = await Promise.all([
+      supabase
+        .from("threads")
+        .select("*")
+        .eq("user_id", userId)
+        .order("updated_at", { ascending: false }),
+      supabase
+        .from("events")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("name", "thread_branch_created")
+        .order("created_at", { ascending: false })
+        .limit(500),
+    ]);
+    assertNoError(threadResult.error, "Failed to list threads");
+    assertNoError(relationResult.error, "Failed to list thread branches");
+
+    const relations = new Map<
+      string,
+      { parentThreadId: string | null; sourceTerm: string | null }
+    >();
+    for (const event of fromDatabaseRows<Event>(relationResult.data)) {
+      const childThreadId =
+        typeof event.payload.childThreadId === "string"
+          ? event.payload.childThreadId
+          : "";
+      if (!childThreadId || relations.has(childThreadId)) continue;
+      relations.set(childThreadId, {
+        parentThreadId:
+          typeof event.payload.parentThreadId === "string"
+            ? event.payload.parentThreadId
+            : null,
+        sourceTerm:
+          typeof event.payload.sourceTerm === "string"
+            ? event.payload.sourceTerm
+            : null,
+      });
+    }
+
+    return fromDatabaseRows<Thread>(threadResult.data).map((thread) => ({
+      ...thread,
+      ...(relations.get(thread.id) ?? {}),
+    }));
   },
 
   async getThread(threadId: string): Promise<Thread | null> {
