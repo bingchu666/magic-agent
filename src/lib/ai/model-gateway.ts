@@ -328,6 +328,7 @@ async function continueLengthLimitedResponse(params: {
   finishReason: string | null;
   maxTokens: number;
   onToken?: (text: string) => void;
+  signal?: AbortSignal;
 }) {
   let text = params.text;
   let finishReason = params.finishReason;
@@ -340,20 +341,23 @@ async function continueLengthLimitedResponse(params: {
       continuationIndex: continuationIndex + 1,
     });
 
-    const completion = await params.client.chat.completions.create({
-      model: params.model,
-      messages: [
-        ...params.messages,
-        { role: "assistant", content: text },
-        {
-          role: "user",
-          content:
-            "Continue exactly from where the previous answer was cut off. Do not restart, summarize, apologize, or repeat completed sections. Finish the interrupted sentence first, then complete the answer. Keep the same language and formatting.",
-        },
-      ],
-      temperature: MODEL_TEMPERATURE,
-      max_tokens: params.maxTokens,
-    });
+    const completion = await params.client.chat.completions.create(
+      {
+        model: params.model,
+        messages: [
+          ...params.messages,
+          { role: "assistant", content: text },
+          {
+            role: "user",
+            content:
+              "Continue exactly from where the previous answer was cut off. Do not restart, summarize, apologize, or repeat completed sections. Finish the interrupted sentence first, then complete the answer. Keep the same language and formatting.",
+          },
+        ],
+        temperature: MODEL_TEMPERATURE,
+        max_tokens: params.maxTokens,
+      },
+      { signal: params.signal }
+    );
     const continuation =
       completion.choices?.[0]?.message?.content?.trim() || "";
     if (!continuation) break;
@@ -374,6 +378,7 @@ async function callProviderStream(params: {
   input: GenerationInput;
   onToken?: (text: string) => void;
   attemptsPerModel?: number;
+  signal?: AbortSignal;
 }) {
   const attemptsPerModel = Math.max(1, params.attemptsPerModel || 1);
   const maxTokens = resolveMaxTokens(params.input);
@@ -382,23 +387,26 @@ async function callProviderStream(params: {
 
   for (const model of params.models) {
     for (let attempt = 1; attempt <= attemptsPerModel; attempt += 1) {
+      let text = "";
+      let bufferedText = "";
+      let emittedToken = false;
+      let suppressDraft = false;
+      let groundedGuardPassed = !guardGroundedAnswer;
       try {
         const messages = buildMessages(params.input, {
           groundedRetry: retryGroundedRefusal,
         });
-        const stream = await params.client.chat.completions.create({
-          model,
-          messages,
-          temperature: MODEL_TEMPERATURE,
-          max_tokens: maxTokens,
-          stream: true,
-        });
+        const stream = await params.client.chat.completions.create(
+          {
+            model,
+            messages,
+            temperature: MODEL_TEMPERATURE,
+            max_tokens: maxTokens,
+            stream: true,
+          },
+          { signal: params.signal }
+        );
 
-        let text = "";
-        let bufferedText = "";
-        let emittedToken = false;
-        let suppressDraft = false;
-        let groundedGuardPassed = !guardGroundedAnswer;
         let finishReason: string | null = null;
         for await (const chunk of stream) {
           finishReason = extractFinishReason(chunk) || finishReason;
@@ -439,6 +447,7 @@ async function callProviderStream(params: {
             finishReason,
             maxTokens,
             onToken: params.onToken,
+            signal: params.signal,
           });
         }
 
@@ -462,6 +471,18 @@ async function callProviderStream(params: {
           provider: params.provider,
         } satisfies GenerationResult;
       } catch (error) {
+        if (params.signal?.aborted) {
+          // The caller stopped the request — keep whatever text already
+          // streamed to the client as the final answer instead of failing
+          // or retrying with another model.
+          if (!emittedToken && bufferedText && params.onToken) {
+            params.onToken(bufferedText);
+          }
+          return {
+            text: cleanResponseText(text),
+            provider: params.provider,
+          } satisfies GenerationResult;
+        }
         console.warn(`${params.provider} stream generation failed`, { model, attempt, error });
       }
     }
@@ -505,7 +526,8 @@ async function callOpenAI(input: GenerationInput): Promise<GenerationResult | nu
 
 async function callDeepSeekStream(
   input: GenerationInput,
-  onToken?: (text: string) => void
+  onToken?: (text: string) => void,
+  signal?: AbortSignal
 ): Promise<GenerationResult | null> {
   if (!process.env.DEEPSEEK_API_KEY) return null;
 
@@ -521,13 +543,15 @@ async function callDeepSeekStream(
     models,
     input,
     onToken,
+    signal,
     attemptsPerModel: shouldGuardGroundedAnswer(input) ? 2 : 1,
   });
 }
 
 async function callOpenAIStream(
   input: GenerationInput,
-  onToken?: (text: string) => void
+  onToken?: (text: string) => void,
+  signal?: AbortSignal
 ): Promise<GenerationResult | null> {
   if (!ENABLE_OPENAI_FALLBACK || !process.env.OPENAI_API_KEY) return null;
 
@@ -540,6 +564,7 @@ async function callOpenAIStream(
     models,
     input,
     onToken,
+    signal,
     attemptsPerModel: shouldGuardGroundedAnswer(input) ? 2 : 1,
   });
 }
@@ -576,15 +601,16 @@ export async function generateWithGateway(input: GenerationInput): Promise<Gener
 
 export async function generateWithGatewayStream(
   input: GenerationInput,
-  onToken?: (text: string) => void
+  onToken?: (text: string) => void,
+  signal?: AbortSignal
 ): Promise<GenerationResult> {
-  const deepSeek = await withTimeout(callDeepSeekStream(input, onToken), MODEL_STREAM_TIMEOUT_MS).catch((error) => {
+  const deepSeek = await withTimeout(callDeepSeekStream(input, onToken, signal), MODEL_STREAM_TIMEOUT_MS).catch((error) => {
     console.warn("deepseek stream timeout/failure", error);
     return null;
   });
   if (deepSeek) return deepSeek;
 
-  const openai = await withTimeout(callOpenAIStream(input, onToken), MODEL_STREAM_TIMEOUT_MS).catch((error) => {
+  const openai = await withTimeout(callOpenAIStream(input, onToken, signal), MODEL_STREAM_TIMEOUT_MS).catch((error) => {
     console.warn("openai stream timeout/failure", error);
     return null;
   });

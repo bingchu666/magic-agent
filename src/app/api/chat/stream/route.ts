@@ -48,15 +48,26 @@ export async function POST(req: Request) {
     const cookieHeader = req.headers.get("cookie") || "";
 
     const encoder = new TextEncoder();
+    // Aborts the in-flight model call when the client stops reading the
+    // stream (e.g. the user clicked "stop generating" and the fetch was
+    // aborted, or the tab/connection closed).
+    const abortController = new AbortController();
 
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
         await withRequestCookie(cookieHeader, async () => {
         const write = <T extends SseEventType>(event: T, payload: ChatSsePayloadMap[T]) => {
-          controller.enqueue(encoder.encode(sseLine(event, payload)));
+          // Once the client has disconnected there is nothing left to write
+          // to — and the underlying controller may already be closed, so
+          // enqueue can throw. Skip silently instead of crashing the request.
+          if (abortController.signal.aborted) return;
+          try {
+            controller.enqueue(encoder.encode(sseLine(event, payload)));
+          } catch (err) {
+            console.warn("Failed to write SSE event", err);
+          }
         };
 
-        let streamFailed = false;
         let threadEventSent = false;
         let streamedAnyToken = false;
         let threadIdFromCallback: string | null = null;
@@ -72,6 +83,7 @@ export async function POST(req: Request) {
             clientHistory: normalizeChatHistory(body.clientHistory),
             responseMode: body.responseMode === "annotated" ? "annotated" : "plain",
             userId: session.id,
+            signal: abortController.signal,
             onThreadReady: (threadId) => {
               threadIdFromCallback = threadId;
               if (threadEventSent) return;
@@ -128,20 +140,25 @@ export async function POST(req: Request) {
             durationMs: Date.now() - chatStartedAt,
           });
         } catch (error) {
-          streamFailed = true;
-          const message = error instanceof Error ? error.message : "Unknown error";
-          write("error", { message });
-        } finally {
-          if (!streamFailed) {
-            controller.close();
+          if (abortController.signal.aborted) {
+            // The client stopped generation — this is expected, not a failure.
+            console.info("Chat stream aborted by client");
           } else {
+            const message = error instanceof Error ? error.message : "Unknown error";
+            write("error", { message });
+          }
+        } finally {
+          try {
             controller.close();
+          } catch {
+            // Already closed/canceled from the client side — nothing to do.
           }
         }
         }); // withRequestCookie
       },
       cancel(reason) {
         console.warn("SSE canceled", reason);
+        abortController.abort(reason);
       },
     });
 

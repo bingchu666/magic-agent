@@ -19,6 +19,7 @@ import {
   Plus,
   Send,
   Settings,
+  Square,
   Trash2,
   X,
 } from "lucide-react";
@@ -355,6 +356,8 @@ export function KnowledgeWorkspace() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [expandedCardId, setExpandedCardId] = useState<string | null>(null);
   const cardBodyRef = useRef<HTMLDivElement | null>(null);
+  // Cards can stream concurrently, so each gets its own controller keyed by id.
+  const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
 
   const commitCards = (
     update: KnowledgeCard[] | ((previous: KnowledgeCard[]) => KnowledgeCard[])
@@ -523,11 +526,15 @@ export function KnowledgeWorkspace() {
     );
     setCardInputs((previous) => ({ ...previous, [cardId]: "" }));
 
+    const abortController = new AbortController();
+    abortControllersRef.current.set(cardId, abortController);
+
     try {
       const current = cardsRef.current.find((item) => item.id === cardId);
       const response = await fetch("/api/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: abortController.signal,
         body: JSON.stringify({
           threadId: current?.threadId,
           userMessage: normalized,
@@ -610,30 +617,64 @@ export function KnowledgeWorkspace() {
         )
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Generation failed";
-      commitCards((previous) =>
-        previous.map((item) =>
-          item.id === cardId
-            ? {
-                ...item,
-                status: "error",
-                messages: item.messages.map((entry) =>
-                  entry.id === assistantId && !entry.content
-                    ? {
-                        ...entry,
-                        content:
-                          locale === "zh"
-                            ? `暂时无法生成回答。${message}`
-                            : `Unable to generate an answer. ${message}`,
-                      }
-                    : entry
-                ),
-              }
-            : item
-        )
-      );
-      setPageError(message);
+      const isUserAbort = (error as { name?: string } | null)?.name === "AbortError";
+
+      if (isUserAbort) {
+        // The user clicked "stop" — whatever streamed in so far (already in
+        // this card's messages) stands as the final content. No error banner
+        // for an intentional stop; only fall back to a placeholder if nothing
+        // ever streamed at all.
+        commitCards((previous) =>
+          previous.map((item) =>
+            item.id === cardId
+              ? {
+                  ...item,
+                  status: "idle",
+                  unread: item.id !== activeCardIdRef.current,
+                  messages: item.messages.map((entry) =>
+                    entry.id === assistantId && !entry.content
+                      ? {
+                          ...entry,
+                          content: locale === "zh" ? "（已停止生成）" : "(Generation stopped)",
+                        }
+                      : entry
+                  ),
+                }
+              : item
+          )
+        );
+      } else {
+        const message = error instanceof Error ? error.message : "Generation failed";
+        commitCards((previous) =>
+          previous.map((item) =>
+            item.id === cardId
+              ? {
+                  ...item,
+                  status: "error",
+                  messages: item.messages.map((entry) =>
+                    entry.id === assistantId && !entry.content
+                      ? {
+                          ...entry,
+                          content:
+                            locale === "zh"
+                              ? `暂时无法生成回答。${message}`
+                              : `Unable to generate an answer. ${message}`,
+                        }
+                      : entry
+                  ),
+                }
+              : item
+          )
+        );
+        setPageError(message);
+      }
+    } finally {
+      abortControllersRef.current.delete(cardId);
     }
+  };
+
+  const stopCardGeneration = (cardId: string) => {
+    abortControllersRef.current.get(cardId)?.abort();
   };
 
   const createRootCard = async (event: FormEvent) => {
@@ -1153,17 +1194,20 @@ export function KnowledgeWorkspace() {
               placeholder="在当前卡片继续提问…"
               disabled={activeCard.status === "streaming"}
             />
-            <button
-              type="submit"
-              disabled={!inputValue.trim() || activeCard.status === "streaming"}
-              aria-label="发送"
-            >
-              {activeCard.status === "streaming" ? (
-                <Loader2 className="animate-spin" size={18} />
-              ) : (
+            {activeCard.status === "streaming" ? (
+              <button
+                type="button"
+                onClick={() => stopCardGeneration(activeCard.id)}
+                aria-label="停止生成"
+                title="停止生成"
+              >
+                <Square size={16} fill="currentColor" strokeWidth={0} />
+              </button>
+            ) : (
+              <button type="submit" disabled={!inputValue.trim()} aria-label="发送">
                 <Send size={18} />
-              )}
-            </button>
+              </button>
+            )}
           </form>
         ) : null}
 
