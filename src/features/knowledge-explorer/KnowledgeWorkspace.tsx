@@ -809,11 +809,14 @@ export function KnowledgeWorkspace() {
     }
   };
 
-  const spawnCard = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!spawnDraft || creatingCard) return;
-    const question = spawnDraft.value.trim();
-    const parent = cardsRef.current.find((card) => card.id === spawnDraft.parentId);
+  // Shared by both the two-step branch modal (spawnCard, below — used when
+  // the user still needs to type their own question) and the term-preview
+  // popover's "创建分支并放大" button, which already has a fixed prompt and
+  // creates straight away without showing that modal at all.
+  const createChildCard = async (draft: SpawnDraft) => {
+    if (creatingCard) return;
+    const question = draft.value.trim();
+    const parent = cardsRef.current.find((card) => card.id === draft.parentId);
     if (!parent || !question) return;
 
     setCreatingCard(true);
@@ -823,19 +826,19 @@ export function KnowledgeWorkspace() {
       // A source term is already short and meaningful (e.g. a concept the
       // user drilled into) — use it as the title as-is and skip the extra
       // model call; otherwise summarize the raw question server-side.
-      const titleInput = spawnDraft.sourceTerm
-        ? { title: cleanTitle(spawnDraft.sourceTerm) }
+      const titleInput = draft.sourceTerm
+        ? { title: cleanTitle(draft.sourceTerm) }
         : { rawQuestion: question };
       const thread = await createServerThread(
         titleInput,
         parentThreadId,
-        spawnDraft.sourceTerm || cleanTitle(question)
+        draft.sourceTerm || cleanTitle(question)
       );
       const child: KnowledgeCard = {
-        id: createId(`knowledge_${spawnDraft.relation}`),
+        id: createId(`knowledge_${draft.relation}`),
         threadId: thread.id,
         parentId: parent.id,
-        relation: spawnDraft.relation,
+        relation: draft.relation,
         title: thread.title,
         question,
         messages: [],
@@ -846,7 +849,10 @@ export function KnowledgeWorkspace() {
       commitCards((previous) => [...previous, child]);
       setSpawnDraft(null);
       setTermPreview(null);
-      setExpandedCardId(child.id);
+      // Newly created cards open at their default (non-expanded) size,
+      // same as opening any existing card — expansion is always an
+      // explicit, opt-in click on the size-toggle button.
+      setExpandedCardId(null);
       setActiveCardId(child.id);
       void askCard(child.id, question);
     } catch (error) {
@@ -854,6 +860,12 @@ export function KnowledgeWorkspace() {
     } finally {
       setCreatingCard(false);
     }
+  };
+
+  const spawnCard = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!spawnDraft || creatingCard) return;
+    await createChildCard(spawnDraft);
   };
 
   const openTerm = async (card: KnowledgeCard, term: string) => {
@@ -1256,12 +1268,13 @@ export function KnowledgeWorkspace() {
               ) : (
                 <p>{termPreview.error || termPreview.text}</p>
               )}
+              {spawnError ? <p className="knowledge-stage-modal-error">{spawnError}</p> : null}
               <button
                 type="button"
-                disabled={termPreview.loading}
+                disabled={termPreview.loading || creatingCard}
                 onClick={() => {
                   setSpawnError("");
-                  setSpawnDraft({
+                  void createChildCard({
                     parentId: previewSourceCard.id,
                     relation: "child",
                     sourceTerm: termPreview.term,
@@ -1269,10 +1282,14 @@ export function KnowledgeWorkspace() {
                   });
                 }}
               >
-                <Maximize2 size={15} />
+                {creatingCard ? (
+                  <Loader2 className="animate-spin" size={15} />
+                ) : (
+                  <Maximize2 size={15} />
+                )}
                 创建分支并放大
               </button>
-              <small>预览不会创建节点；确认后才叠加到当前卡片上</small>
+              <small>点击后直接创建子卡片并进入</small>
             </aside>
           ) : null}
         </section>
