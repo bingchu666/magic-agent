@@ -122,6 +122,10 @@ function createStarterCards(): KnowledgeCard[] {
   ];
 }
 
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
 function cleanTitle(value: string) {
   return value
     .replace(/\[\[|\]\]/g, "")
@@ -355,7 +359,21 @@ export function KnowledgeWorkspace() {
   const [hydrated, setHydrated] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [expandedCardId, setExpandedCardId] = useState<string | null>(null);
+  const [childCardDragPosition, setChildCardDragPosition] = useState<{
+    left: number;
+    top: number;
+  } | null>(null);
+  const [isDraggingChildCard, setIsDraggingChildCard] = useState(false);
   const cardBodyRef = useRef<HTMLDivElement | null>(null);
+  const stackRef = useRef<HTMLDivElement | null>(null);
+  const childCardRef = useRef<HTMLDivElement | null>(null);
+  const childCardDragRef = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    startLeft: number;
+    startTop: number;
+  } | null>(null);
   // Cards can stream concurrently, so each gets its own controller keyed by id.
   const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
 
@@ -432,7 +450,80 @@ export function KnowledgeWorkspace() {
   const childExpanded = Boolean(
     parentCard && activeCard && expandedCardId === activeCard.id
   );
+  const baseExpanded = Boolean(
+    !parentCard && stageBaseCard && expandedCardId === stageBaseCard.id
+  );
   const inputValue = activeCard ? cardInputs[activeCard.id] ?? "" : "";
+
+  useEffect(() => {
+    // Dragging is only remembered for as long as this card stays open —
+    // reopening it (or switching to a different card) restores the default position.
+    setChildCardDragPosition(null);
+  }, [activeCard?.id]);
+
+  const handleChildCardDragStart = (event: React.PointerEvent<HTMLElement>) => {
+    if (childExpanded) return;
+    if ((event.target as HTMLElement).closest("button")) return;
+    const cardEl = childCardRef.current;
+    const stackEl = stackRef.current;
+    if (!cardEl || !stackEl) return;
+
+    const cardRect = cardEl.getBoundingClientRect();
+    const stackRect = stackEl.getBoundingClientRect();
+    const startLeft = cardRect.left - stackRect.left;
+    const startTop = cardRect.top - stackRect.top;
+
+    childCardDragRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startLeft,
+      startTop,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setChildCardDragPosition({ left: startLeft, top: startTop });
+    setIsDraggingChildCard(true);
+  };
+
+  const handleChildCardDragMove = (event: React.PointerEvent<HTMLElement>) => {
+    const drag = childCardDragRef.current;
+    const cardEl = childCardRef.current;
+    const stackEl = stackRef.current;
+    // .knowledge-stage-main is the actual overflow:hidden boundary (and sits
+    // to the right of the rail sidebar, which paints above the card) — clamp
+    // against its real rect rather than the narrower stack, so a drag can
+    // never tuck the card behind the rail or past the true clipped edge.
+    const mainEl = stackEl?.parentElement ?? null;
+    if (!drag || drag.pointerId !== event.pointerId || !cardEl || !stackEl || !mainEl) return;
+
+    const SAFE_MARGIN = 8;
+    const mainRect = mainEl.getBoundingClientRect();
+    const stackRect = stackEl.getBoundingClientRect();
+    const dx = event.clientX - drag.startClientX;
+    const dy = event.clientY - drag.startClientY;
+
+    const minLeft = 0;
+    const maxLeft = Math.max(
+      minLeft,
+      mainRect.right - stackRect.left - cardEl.offsetWidth - SAFE_MARGIN
+    );
+    const minTop = 0;
+    const maxTop = Math.max(
+      minTop,
+      mainRect.bottom - stackRect.top - cardEl.offsetHeight - SAFE_MARGIN
+    );
+
+    const nextLeft = clamp(drag.startLeft + dx, minLeft, maxLeft);
+    const nextTop = clamp(drag.startTop + dy, minTop, maxTop);
+    setChildCardDragPosition({ left: nextLeft, top: nextTop });
+  };
+
+  const handleChildCardDragEnd = (event: React.PointerEvent<HTMLElement>) => {
+    if (childCardDragRef.current?.pointerId === event.pointerId) {
+      childCardDragRef.current = null;
+      setIsDraggingChildCard(false);
+    }
+  };
 
   const atlasMapNodes = useMemo<MiniTreeNode[]>(
     () =>
@@ -455,12 +546,14 @@ export function KnowledgeWorkspace() {
   }, [activeCard, activeCard?.messages]);
 
   const focusCard = (cardId: string) => {
-    const target = cardsRef.current.find((card) => card.id === cardId);
     commitCards((previous) =>
       previous.map((card) => (card.id === cardId ? { ...card, unread: false } : card))
     );
     setTermPreview(null);
-    setExpandedCardId(target?.parentId ? target.id : null);
+    // Focusing any card — root or child — always starts collapsed at its
+    // default size; expansion is an explicit, opt-in action via the
+    // size-toggle button, not something a navigation should carry over.
+    setExpandedCardId(null);
     setActiveCardId(cardId);
   };
 
@@ -932,6 +1025,7 @@ export function KnowledgeWorkspace() {
         </nav>
 
         <section
+          ref={stackRef}
           className={`knowledge-stage-stack ${
             childExpanded ? "is-child-expanded" : ""
           }`}
@@ -959,7 +1053,7 @@ export function KnowledgeWorkspace() {
               key={stageBaseCard.id}
               className={`knowledge-stage-card relation-${stageBaseCard.relation} ${
                 parentCard ? "has-child-open" : ""
-              }`}
+              } ${baseExpanded ? "is-expanded" : ""}`}
             >
               <header className="knowledge-stage-card-header">
                 <div>
@@ -970,6 +1064,22 @@ export function KnowledgeWorkspace() {
                   <h1>{stageBaseCard.title}</h1>
                 </div>
                 <div className="knowledge-stage-card-tools">
+                  {!parentCard ? (
+                    <button
+                      type="button"
+                      className="knowledge-stage-size-toggle"
+                      onClick={() =>
+                        setExpandedCardId((current) =>
+                          current === stageBaseCard.id ? null : stageBaseCard.id
+                        )
+                      }
+                      title={baseExpanded ? "缩小这张卡片" : "放大这张卡片"}
+                      aria-label={baseExpanded ? "缩小这张卡片" : "放大这张卡片"}
+                    >
+                      {baseExpanded ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
+                      <span>{baseExpanded ? "缩小" : "放大"}</span>
+                    </button>
+                  ) : null}
                   {parentCard ? (
                     <button
                       type="button"
@@ -978,15 +1088,6 @@ export function KnowledgeWorkspace() {
                       aria-label="切换到这张父卡片"
                     >
                       <ChevronLeft size={17} />
-                    </button>
-                  ) : nextCard ? (
-                    <button
-                      type="button"
-                      onClick={() => focusCard(nextCard.id)}
-                      title="打开最近的下一层卡片"
-                      aria-label="打开最近的下一层卡片"
-                    >
-                      <ChevronRight size={17} />
                     </button>
                   ) : null}
                   <button
@@ -1016,17 +1117,45 @@ export function KnowledgeWorkspace() {
                 onTerm={(term) => void openTerm(stageBaseCard, term)}
                 bodyRef={parentCard ? undefined : cardBodyRef}
               />
+              {!parentCard && nextCard ? (
+                <button
+                  type="button"
+                  className="knowledge-stage-card-forward"
+                  onClick={() => focusCard(nextCard.id)}
+                  title={`进入：${nextCard.title}`}
+                  aria-label={`进入下一层：${nextCard.title}`}
+                >
+                  <span>下一层</span>
+                  <ChevronRight size={19} />
+                </button>
+              ) : null}
             </article>
           ) : null}
 
           {parentCard && activeCard ? (
             <article
               key={`child_${activeCard.id}`}
+              ref={childCardRef}
               className={`knowledge-stage-child-card relation-${activeCard.relation} ${
                 childExpanded ? "is-expanded" : "is-collapsed"
-              }`}
+              } ${isDraggingChildCard ? "is-dragging" : ""}`}
+              style={
+                !childExpanded && childCardDragPosition
+                  ? {
+                      left: childCardDragPosition.left,
+                      top: childCardDragPosition.top,
+                      right: "auto",
+                    }
+                  : undefined
+              }
             >
-              <header className="knowledge-stage-child-header">
+              <header
+                className="knowledge-stage-child-header"
+                onPointerDown={handleChildCardDragStart}
+                onPointerMove={handleChildCardDragMove}
+                onPointerUp={handleChildCardDragEnd}
+                onPointerCancel={handleChildCardDragEnd}
+              >
                 <div>
                   <span>
                     <RelationIcon relation={activeCard.relation} />
@@ -1081,25 +1210,20 @@ export function KnowledgeWorkspace() {
                 bodyRef={cardBodyRef}
                 compact={!childExpanded}
               />
-            </article>
-          ) : null}
-
-          {parentCard || nextCard ? (
-            <nav className="knowledge-stage-layer-switcher" aria-label="层级切换">
-              {parentCard ? (
-                <button
-                  type="button"
-                  onClick={() => focusCard(parentCard.id)}
-                  title={`返回：${parentCard.title}`}
-                  aria-label={`返回父卡片：${parentCard.title}`}
-                >
-                  <ChevronLeft size={19} />
-                  <span>上一层</span>
-                </button>
-              ) : null}
+              <button
+                type="button"
+                className="knowledge-stage-child-card-back"
+                onClick={() => focusCard(parentCard.id)}
+                title={`返回：${parentCard.title}`}
+                aria-label={`返回父卡片：${parentCard.title}`}
+              >
+                <ChevronLeft size={19} />
+                <span>上一层</span>
+              </button>
               {nextCard ? (
                 <button
                   type="button"
+                  className="knowledge-stage-card-forward"
                   onClick={() => focusCard(nextCard.id)}
                   title={`进入：${nextCard.title}`}
                   aria-label={`进入下一层：${nextCard.title}`}
@@ -1108,7 +1232,7 @@ export function KnowledgeWorkspace() {
                   <ChevronRight size={19} />
                 </button>
               ) : null}
-            </nav>
+            </article>
           ) : null}
 
           {termPreview && previewSourceCard ? (

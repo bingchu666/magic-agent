@@ -5339,6 +5339,23 @@ a {
   backdrop-filter: blur(32px) saturate(155%);
   -webkit-backdrop-filter: blur(32px) saturate(155%);
   animation: knowledge-card-enter 440ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  transition: width 460ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* The root card already fills .knowledge-stage-stack with no gaps at rest,
+   so "expanding" it only needs to reach further right — past the stack's
+   own edge, covering the background tree — the same way
+   .knowledge-stage-child-card.is-expanded does (matching its target right
+   edge: 216px past the stack, 10px shy of .knowledge-stage-main's true
+   edge). .knowledge-stage-stack's own z-index (10) already paints
+   everything inside it above the tree navigator (z-index 2), so no
+   z-index override is needed here. */
+.knowledge-stage-card.is-expanded {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: calc(100% + 216px);
+  height: 100%;
 }
 
 .knowledge-stage-card::after {
@@ -5394,12 +5411,15 @@ a {
 .knowledge-stage-child-card {
   position: absolute;
   z-index: 18;
-  top: 10%;
-  right: -9%;
+  /* Same footprint as .knowledge-stage-card's default (fills the stack,
+     no gaps, doesn't reach into the tree navigator's reserved margin) —
+     "floating small window" is now only what dragging (left/top set
+     inline) or .is-expanded do, not the resting state. */
+  top: 0;
+  left: 0;
   display: grid;
-  width: min(55%, 660px);
-  height: 72%;
-  min-height: 360px;
+  width: 100%;
+  height: 100%;
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.9);
@@ -5416,23 +5436,32 @@ a {
   animation: knowledge-child-card-enter 480ms cubic-bezier(0.16, 1, 0.3, 1) both;
   transition:
     top 460ms cubic-bezier(0.16, 1, 0.3, 1),
-    right 460ms cubic-bezier(0.16, 1, 0.3, 1),
     width 460ms cubic-bezier(0.16, 1, 0.3, 1),
     height 460ms cubic-bezier(0.16, 1, 0.3, 1),
     border-radius 360ms ease,
     box-shadow 360ms ease;
 }
 
+/* Dragging sets left/top/right inline on every pointermove — suppress the
+   positional transitions above so the card tracks the cursor immediately
+   instead of easing toward it. (Don't touch `animation` here: toggling it
+   off and back on restarts the entrance animation from its first keyframe,
+   causing a visible glitch every time a drag ends.) */
+.knowledge-stage-child-card.is-dragging {
+  transition: none;
+}
+
 .knowledge-stage-child-card.is-expanded {
   top: 10px;
-  /* Reaches past .knowledge-stage-stack's own right edge by the same
-     226px .knowledge-stage-main reserves for .knowledge-stage-navigator,
-     so the expanded card fully covers the background tree instead of
-     leaving it peeking out on the right. */
-  right: -226px;
-  width: calc(100% + 206px);
+  /* left stays 0 (inherited from the base rule, unchanged) — only width
+     grows. Deliberately NOT setting `right` here: the base rule now sets
+     `left`, and adding `right` back would over-constrain the box
+     (left + right + width all specified), which makes browsers silently
+     drop `right` and compute position from left+width instead — the same
+     target as .knowledge-stage-card.is-expanded: 216px past the stack,
+     10px shy of .knowledge-stage-main's true right edge. */
+  width: calc(100% + 216px);
   height: calc(100% - 10px);
-  min-height: 0;
   border-radius: 30px;
   box-shadow:
     inset 0 1px 0 #ffffff,
@@ -5471,6 +5500,16 @@ a {
   gap: 14px;
   padding: 17px 18px 15px 21px;
   border-bottom: 1px solid rgba(70, 91, 78, 0.1);
+  cursor: grab;
+  touch-action: none;
+}
+
+.knowledge-stage-child-card.is-expanded .knowledge-stage-child-header {
+  cursor: default;
+}
+
+.knowledge-stage-child-header:active {
+  cursor: grabbing;
 }
 
 .knowledge-stage-child-header > div:first-child {
@@ -5579,25 +5618,21 @@ a {
   font-size: 16px;
 }
 
-.knowledge-stage-layer-switcher {
+/* An independent nav control hugging the card's own left edge (kept
+   inside the border, since the card's overflow:hidden would clip
+   anything positioned to stick out past it) — instead of floating over
+   the middle of the card's body content like the old layer switcher did.
+   Left, to match the usual back/forward reading direction. */
+.knowledge-stage-child-card-back {
   position: absolute;
-  z-index: 26;
+  z-index: 5;
   top: 50%;
-  right: -5px;
-  left: -5px;
+  left: 14px;
   display: flex;
-  justify-content: space-between;
-  pointer-events: none;
-  transform: translateY(-50%);
-}
-
-.knowledge-stage-layer-switcher button {
-  display: flex;
+  align-items: center;
+  gap: 4px;
   min-width: 42px;
   height: 42px;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
   padding: 0 10px;
   border: 1px solid rgba(255, 255, 255, 0.9);
   border-radius: 999px;
@@ -5609,20 +5644,57 @@ a {
   font-size: 9px;
   font-weight: 700;
   cursor: pointer;
-  pointer-events: auto;
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
+  transform: translateY(-50%);
   transition: 180ms ease;
 }
 
-.knowledge-stage-layer-switcher button:only-child:last-child {
-  margin-left: auto;
-}
-
-.knowledge-stage-layer-switcher button:hover {
+.knowledge-stage-child-card-back:hover {
   color: var(--stage-accent);
   background: rgba(255, 255, 255, 0.96);
-  transform: scale(1.04);
+  transform: translateY(-50%) scale(1.04);
+}
+
+/* "下一层" — scoped inside whichever card (.knowledge-stage-card or
+   .knowledge-stage-child-card) is currently the focused/active one, on
+   its opposite (right) edge from -back — matching the usual
+   forward/back reading direction. Each card's own z-index then naturally
+   contains it, instead of the old shared .knowledge-stage-layer-switcher,
+   which used one flat z-index (26) for the whole stack and so floated
+   above whichever card happened to have a lower z-index — including an
+   already-expanded card in front of it. */
+.knowledge-stage-card-forward {
+  position: absolute;
+  z-index: 5;
+  top: 50%;
+  right: 14px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 42px;
+  height: 42px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  border-radius: 999px;
+  color: #4d6257;
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 12px 32px rgba(40, 67, 51, 0.15);
+  font-size: 9px;
+  font-weight: 700;
+  cursor: pointer;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  transform: translateY(-50%);
+  transition: 180ms ease;
+}
+
+.knowledge-stage-card-forward:hover {
+  color: var(--stage-accent);
+  background: rgba(255, 255, 255, 0.96);
+  transform: translateY(-50%) scale(1.04);
 }
 
 @keyframes knowledge-card-enter {
@@ -5707,6 +5779,11 @@ a {
     0 7px 18px rgba(46, 67, 54, 0.08);
   cursor: pointer;
   transition: 180ms ease;
+}
+
+.knowledge-stage-card-tools button.knowledge-stage-size-toggle {
+  width: auto;
+  padding: 0 10px;
 }
 
 .knowledge-stage-card-tools button:hover {
@@ -6451,14 +6528,12 @@ a {
     right: 210px;
   }
 
-  .knowledge-stage-child-card {
-    right: -2%;
-    width: min(62%, 620px);
+  .knowledge-stage-card.is-expanded {
+    width: calc(100% + 200px);
   }
 
   .knowledge-stage-child-card.is-expanded {
-    right: -210px;
-    width: calc(100% + 210px);
+    width: calc(100% + 200px);
   }
 }
 
@@ -6556,6 +6631,11 @@ a {
   }
 
   .knowledge-stage-child-card {
+    /* Reset the base rule's `left: 0` — this breakpoint still positions
+       via right + width (a small peek-frame, not a full-bleed fill like
+       the desktop default), so left must stay auto or left+right+width
+       would over-constrain the box and shift it left. */
+    left: auto;
     top: 5%;
     right: 2%;
     width: 96%;
@@ -6565,6 +6645,7 @@ a {
   }
 
   .knowledge-stage-child-card.is-expanded {
+    left: auto;
     top: 0;
     right: 0;
     width: 100%;
@@ -6584,22 +6665,6 @@ a {
 
   .knowledge-stage-card-body.is-compact {
     padding: 18px 18px 54px;
-  }
-
-  .knowledge-stage-layer-switcher {
-    right: -2px;
-    left: -2px;
-  }
-
-  .knowledge-stage-layer-switcher button {
-    min-width: 38px;
-    width: 38px;
-    height: 38px;
-    padding: 0;
-  }
-
-  .knowledge-stage-layer-switcher button span {
-    display: none;
   }
 
   .knowledge-stage-card-header {
