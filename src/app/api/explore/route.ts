@@ -1,14 +1,48 @@
 import { NextResponse } from "next/server";
 import { assertSession } from "@/features/auth/session.server";
 import { generateWithGateway } from "@/lib/ai/model-gateway";
+import { supabaseDb } from "@/lib/data/supabase-db";
 import { Locale } from "@/lib/domain/types";
 
 const EXPLORE_SYSTEM_PROMPT =
   "You are a rigorous interdisciplinary learning guide inside a hierarchical knowledge workspace. " +
   "Be concise, accurate, explicit about uncertainty, and do not force the discussion toward stage magic unless asked.";
 
+const GLOSSARY_TRANSLATE_SYSTEM_PROMPT =
+  "You are a precise translator for a magic terminology glossary. Translate the given English " +
+  "dictionary entry into natural, concise Chinese. Preserve its factual content exactly — do not " +
+  "add, remove, or guess at information beyond what's given. Keep any bracketed rarity/era notes " +
+  "(e.g. \"[obsolete after 1896]\") translated too. Output only the translated definition, no heading.";
+
+/** Collapse OCR/reference-book whitespace noise without touching wording. */
+function normalizeDefinition(text: string) {
+  return text.trim().replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n");
+}
+
+/** Serve a glossary hit: English as-is, or translated to Chinese for zh locale. */
+async function respondWithGlossaryMatch(rawDefinition: string, locale: Locale) {
+  const definition = normalizeDefinition(rawDefinition);
+  if (locale === "zh") {
+    const translated = await generateWithGateway({
+      locale: "zh",
+      intent: "translation",
+      userMessage: definition,
+      history: [],
+      fileContext: "",
+      systemPrompt: GLOSSARY_TRANSLATE_SYSTEM_PROMPT,
+    });
+    // provider "rule" means the translation call itself fell back to a
+    // canned "model unavailable" string — serve the glossary's own English
+    // text instead of that unhelpful placeholder.
+    if (translated.provider !== "rule") {
+      return NextResponse.json({ text: translated.text, provider: translated.provider, source: "glossary" });
+    }
+  }
+  return NextResponse.json({ text: definition, provider: "glossary", source: "glossary" });
+}
+
 type ExploreUtilityBody = {
-  mode?: "preview" | "validate" | "summarize";
+  mode?: "preview" | "validate" | "summarize" | "termLookup";
   locale?: Locale;
   term?: string;
   context?: string;
@@ -27,9 +61,35 @@ export async function POST(req: Request) {
     const locale: Locale = body.locale === "en" ? "en" : "zh";
     let prompt = "";
 
+    // Raw glossary lookup for callers that need the dictionary's own text as
+    // grounding material (e.g. forcing a follow-up generation to stick to
+    // it) rather than a user-facing, possibly-translated preview string.
+    if (body.mode === "termLookup") {
+      const term = clip(body.term, 160);
+      if (!term) return NextResponse.json({ error: "Missing term" }, { status: 400 });
+      const glossaryMatch =
+        (await supabaseDb.findExactMagicTerm(term)) ?? (await supabaseDb.findSimilarMagicTerm(term));
+      return NextResponse.json(
+        glossaryMatch
+          ? {
+              matched: true,
+              term: glossaryMatch.term,
+              definition: normalizeDefinition(glossaryMatch.definition),
+            }
+          : { matched: false }
+      );
+    }
+
     if (body.mode === "preview") {
       const term = clip(body.term, 160);
       if (!term) return NextResponse.json({ error: "Missing term" }, { status: 400 });
+
+      const glossaryMatch =
+        (await supabaseDb.findExactMagicTerm(term)) ?? (await supabaseDb.findSimilarMagicTerm(term));
+      if (glossaryMatch) {
+        return await respondWithGlossaryMatch(glossaryMatch.definition, locale);
+      }
+
       prompt =
         locale === "zh"
           ? `用不超过100字解释术语“${term}”。先给一句直观定义，再说明它为什么与当前上下文有关。不要使用标题。\n\n当前上下文：${clip(body.context, 2200)}`
@@ -63,7 +123,7 @@ export async function POST(req: Request) {
       systemPrompt: EXPLORE_SYSTEM_PROMPT,
     });
 
-    return NextResponse.json({ text: result.text, provider: result.provider });
+    return NextResponse.json({ text: result.text, provider: result.provider, source: "ai" });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     return NextResponse.json(

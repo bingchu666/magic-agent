@@ -198,6 +198,13 @@ export type SafetyResult = {
   userFacingNotice?: string;
 };
 
+/** A matched knowledge-base entry, tagged by which table it came from so the
+ * UI never conflates a trick hit with a glossary hit (or vice versa). */
+export type KnowledgeSourceRef = {
+  title: string;
+  source: "trick" | "term";
+};
+
 export type AgentOutput = {
   text: string;
   locale: Locale;
@@ -208,7 +215,7 @@ export type AgentOutput = {
   refreshReason: "learning_intent" | "topic_shift" | "keep_previous";
   goalTopic: string | null;
   usedFileInsights: FileInsight[];
-  knowledgeSources: string[];
+  knowledgeSources: KnowledgeSourceRef[];
   safety: SafetyResult;
   provider: "deepseek" | "openai" | "rule";
 };
@@ -220,6 +227,14 @@ export type ChatStreamRequest = {
   attachmentIds?: string[];
   clientHistory?: ChatHistoryMessage[];
   responseMode?: "plain" | "annotated";
+  /**
+   * Knowledge sources the caller already resolved before sending this
+   * message (e.g. a glossary hit whose definition was appended into
+   * userMessage as forced reference material). Merged into the server's own
+   * retrieval-derived knowledgeSources so the "hit the knowledge base" UI
+   * state and citation instructions reflect it too.
+   */
+  presetKnowledgeSources?: KnowledgeSourceRef[];
 };
 
 export type ChatHistoryMessage = {
@@ -246,7 +261,7 @@ export type ChatSsePayloadMap = {
     recommendationRefreshed: boolean;
     refreshReason: AgentOutput["refreshReason"];
     goalTopic: string | null;
-    knowledgeSources: string[];
+    knowledgeSources: KnowledgeSourceRef[];
     annotatedText?: string;
   };
   error: { message: string };

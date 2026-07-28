@@ -21,9 +21,11 @@ import {
 import { createId, nowIso } from "@/lib/domain/utils";
 import { embedText } from "@/lib/ai/embedding";
 import { embedTrickText } from "@/lib/ai/trick-embedding";
+import { embedTermTexts } from "@/lib/ai/term-embedding";
 import { buildTrickKeywordPlan, rankKeywordTricks } from "@/lib/ai/trick-keyword-search";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { createServerClient } from "@supabase/ssr";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { fromDatabaseRow, fromDatabaseRows, toDatabaseRow } from "@/lib/data/case-mapper";
 
@@ -61,6 +63,55 @@ async function sc() {
 
 function assertNoError(error: { message?: string } | null, action: string) {
   if (error) throw new Error(`${action}: ${error.message ?? "database error"}`);
+}
+
+// The full magic_terms table (~2500 rows of term+definition) is small and
+// effectively static reference data, so it's cached in-process rather than
+// re-fetched on every chat turn's term-mention scan. Fetching it is a cold,
+// paginated, ~3.5s network round trip (PostgREST caps a single request at
+// 1000 rows, so 2500+ rows takes 3 sequential requests) — far longer than
+// the ~800ms budget used for other optional context, so it gets its own
+// cache with its own refresh strategy rather than sharing that timeout.
+const MAGIC_TERMS_SCAN_CACHE_TTL_MS = 10 * 60 * 1000;
+type MagicTermScanRow = { term: string; definition: string };
+let magicTermsScanCache: { expiresAt: number; rows: MagicTermScanRow[] } | null = null;
+let magicTermsScanRefreshInFlight: Promise<MagicTermScanRow[]> | null = null;
+
+// This table is static public reference data, not user-scoped, so reading it
+// doesn't need the per-request cookie/session plumbing `sc()` provides — and
+// critically, unlike `sc()`, this client works outside of a request (e.g.
+// during server-startup cache warmup, before any request cookies exist).
+let publicReferenceClient: SupabaseClient | null = null;
+function getPublicReferenceClient() {
+  if (publicReferenceClient) return publicReferenceClient;
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? process.env.SUPABASE_PUBLISHABLE_KEY;
+  if (!url || !key) {
+    throw new Error("Missing Supabase URL/anon key for the public reference client.");
+  }
+  publicReferenceClient = createClient(url, key, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+  return publicReferenceClient;
+}
+
+async function fetchAllMagicTermsForScan(): Promise<MagicTermScanRow[]> {
+  const supabase = getPublicReferenceClient();
+  const rows: MagicTermScanRow[] = [];
+  const pageSize = 1000;
+  let from = 0;
+  while (true) {
+    const { data, error } = await supabase
+      .from("magic_terms")
+      .select("term, definition")
+      .range(from, from + pageSize - 1);
+    if (error) throw new Error(`Failed to list magic terms: ${error.message}`);
+    if (!data || data.length === 0) break;
+    rows.push(...(data as MagicTermScanRow[]));
+    if (data.length < pageSize) break;
+    from += pageSize;
+  }
+  return rows;
 }
 
 function parseVector(value: unknown): number[] {
@@ -908,6 +959,137 @@ export const supabaseDb = {
     }
 
     return searchTricksByKeyword(queryText, matchCount);
+  },
+
+  // ── Magic Terms ──────────────────────────────────────────
+
+  /**
+   * Semantic fallback for when findExactMagicTerm finds nothing — e.g. a
+   * Chinese concept phrase against this English-only dictionary, or English
+   * wording that just doesn't match a headword verbatim. The stored
+   * embeddings are over each entry's *definition* paragraph (not the
+   * headword), so raw cosine similarity between a short query and a long
+   * definition runs lower than a same-length comparison would. 0.75 is a
+   * conservative starting point, not a measured value — tune it against real
+   * click-throughs once semantic lookups are live.
+   */
+  async findSimilarMagicTerm(queryText: string, threshold = 0.75) {
+    const needle = queryText.trim();
+    if (!needle || !process.env.VOYAGE_API_KEY) return null;
+
+    let embedding: number[];
+    try {
+      [embedding] = await embedTermTexts([needle], "query");
+    } catch (error) {
+      console.warn("Magic term query embedding failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+
+    const supabase = await sc();
+    const { data, error } = await supabase.rpc("match_magic_term_chunks", {
+      query_embedding: embedding,
+      match_count: 1,
+    });
+
+    if (error) {
+      console.warn("Semantic magic term search failed", { error: error.message });
+      return null;
+    }
+
+    const top = (data as Array<{ term: string; definition: string; similarity: number }> | null)?.[0];
+    if (!top || top.similarity < threshold) return null;
+
+    return fromDatabaseRow<{ term: string; definition: string; similarity: number }>(top);
+  },
+
+  /**
+   * Case-insensitive exact lookup against magic_terms.term. Many dictionary
+   * entries store several spellings/variants in one term field separated by
+   * "; " (e.g. "back palm; back-palm"), so a candidate row counts as a match
+   * if the query equals the full term OR any one of its ";"-separated parts.
+   */
+  async findExactMagicTerm(term: string) {
+    const needle = term.trim();
+    if (!needle) return null;
+
+    const supabase = await sc();
+    const escaped = needle.replace(/[%_\\]/g, (char) => `\\${char}`);
+    const { data, error } = await supabase
+      .from("magic_terms")
+      .select("id, term, definition, see_also, source")
+      .ilike("term", `%${escaped}%`)
+      .limit(20);
+
+    if (error) throw new Error(`Failed to look up magic term: ${error.message}`);
+
+    const needleLower = needle.toLowerCase();
+    const match = (data || []).find((row) =>
+      String(row.term ?? "")
+        .split(";")
+        .map((variant) => variant.trim().toLowerCase())
+        .includes(needleLower)
+    );
+
+    return fromDatabaseRow<{
+      id: string;
+      term: string;
+      definition: string;
+      seeAlso: string | null;
+      source: string | null;
+    }>(match ?? null);
+  },
+
+  /**
+   * Full term+definition snapshot for scanning free-form chat text for
+   * dictionary mentions (see findMagicTermMentions). Cached in-process, with
+   * stale-while-revalidate semantics: once populated, a call never blocks on
+   * the ~3.5s cold fetch again — an expired cache is served as-is while a
+   * background refresh replaces it for next time. Call this once at server
+   * startup (see src/instrumentation.ts) to avoid even the very first
+   * request paying that cost.
+   */
+  async listMagicTermsForScan(): Promise<MagicTermScanRow[]> {
+    if (magicTermsScanCache) {
+      const isFresh = magicTermsScanCache.expiresAt > Date.now();
+      if (!isFresh && !magicTermsScanRefreshInFlight) {
+        magicTermsScanRefreshInFlight = fetchAllMagicTermsForScan()
+          .then((rows) => {
+            magicTermsScanCache = { expiresAt: Date.now() + MAGIC_TERMS_SCAN_CACHE_TTL_MS, rows };
+            return rows;
+          })
+          .catch((error) => {
+            console.warn("Background magic terms cache refresh failed; keeping stale data", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+            // Back off briefly instead of retrying on every single chat
+            // message while the DB is unreachable.
+            magicTermsScanCache = { ...magicTermsScanCache!, expiresAt: Date.now() + 30_000 };
+            return magicTermsScanCache.rows;
+          })
+          .finally(() => {
+            magicTermsScanRefreshInFlight = null;
+          });
+      }
+      return magicTermsScanCache.rows;
+    }
+
+    // True cold start (e.g. the startup warmup hasn't landed yet) — nothing
+    // stale to fall back on, so this call has to wait for the real fetch.
+    // Concurrent callers share the same in-flight promise instead of each
+    // triggering their own paginated fetch.
+    if (!magicTermsScanRefreshInFlight) {
+      magicTermsScanRefreshInFlight = fetchAllMagicTermsForScan()
+        .then((rows) => {
+          magicTermsScanCache = { expiresAt: Date.now() + MAGIC_TERMS_SCAN_CACHE_TTL_MS, rows };
+          return rows;
+        })
+        .finally(() => {
+          magicTermsScanRefreshInFlight = null;
+        });
+    }
+    return magicTermsScanRefreshInFlight;
   },
 
   // ── Onboarding ──────────────────────────────────────────

@@ -14,11 +14,6 @@ const DOMAIN_CONCEPT_PATTERNS = [
   /\bforcing technique\b/gi,
   /\bmisdirection\b/gi,
   /\bsleight of hand\b/gi,
-  /\bquantum entanglement\b/gi,
-  /\bno-communication theorem\b/gi,
-  /\bmachine learning\b/gi,
-  /\breinforcement learning\b/gi,
-  /\bmixture of experts\b/gi,
   /假洗牌/g,
   /丝带展牌/g,
   /双翻/g,
@@ -27,10 +22,6 @@ const DOMAIN_CONCEPT_PATTERNS = [
   /掌藏/g,
   /法式落下/g,
   /错误引导/g,
-  /量子纠缠/g,
-  /不可通信定理/g,
-  /强化学习/g,
-  /混合专家模型/g,
 ];
 
 function normalizeCandidate(value: string) {

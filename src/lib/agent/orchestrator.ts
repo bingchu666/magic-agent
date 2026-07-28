@@ -151,6 +151,7 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
     userMessage: input.userMessage,
     attachmentIds: input.attachmentIds,
     clientHistory,
+    presetKnowledgeSources: input.presetKnowledgeSources,
   });
 
   const history = clientHistory.length > 0
@@ -178,8 +179,8 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
       : "",
     context.knowledgeSources.length
       ? locale === "zh"
-        ? `本次已命中应用知识库。优先使用检索内容，并在回答末尾单独添加“知识库依据：${context.knowledgeSources.join("；")}”。只能列出这些真实标题，不要编造来源。`
-        : `The app knowledge base matched this request. Use the retrieved material and end with "Database grounding: ${context.knowledgeSources.join("; ")}". List only these exact titles and do not invent sources.`
+        ? `本次已命中应用知识库。优先使用检索内容，并在回答末尾单独添加“知识库依据：${context.knowledgeSources.map((item) => item.title).join("；")}”。只能列出这些真实标题，不要编造来源。`
+        : `The app knowledge base matched this request. Use the retrieved material and end with "Database grounding: ${context.knowledgeSources.map((item) => item.title).join("; ")}". List only these exact titles and do not invent sources.`
       : "",
   ].filter(Boolean);
 

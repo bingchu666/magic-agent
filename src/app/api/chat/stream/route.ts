@@ -1,11 +1,25 @@
 import { assertSession } from "@/features/auth/session.server";
 import { runAgentOrchestration } from "@/lib/agent/orchestrator";
 import { withRequestCookie } from "@/lib/data/supabase-db";
-import { ChatSsePayloadMap, ChatStreamRequest, SseEventType } from "@/lib/domain/types";
+import {
+  ChatSsePayloadMap,
+  ChatStreamRequest,
+  KnowledgeSourceRef,
+  SseEventType,
+} from "@/lib/domain/types";
 import { normalizeChatHistory } from "@/lib/agent/history";
 
 function sseLine<T extends SseEventType>(event: T, data: ChatSsePayloadMap[T]) {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+function isKnowledgeSourceRef(value: unknown): value is KnowledgeSourceRef {
+  return (
+    Boolean(value) &&
+    typeof value === "object" &&
+    typeof (value as KnowledgeSourceRef).title === "string" &&
+    ((value as KnowledgeSourceRef).source === "trick" || (value as KnowledgeSourceRef).source === "term")
+  );
 }
 
 function chunkText(text: string) {
@@ -82,6 +96,9 @@ export async function POST(req: Request) {
             attachmentIds: Array.isArray(body.attachmentIds) ? body.attachmentIds : [],
             clientHistory: normalizeChatHistory(body.clientHistory),
             responseMode: body.responseMode === "annotated" ? "annotated" : "plain",
+            presetKnowledgeSources: Array.isArray(body.presetKnowledgeSources)
+              ? body.presetKnowledgeSources.filter(isKnowledgeSourceRef).slice(0, 5)
+              : undefined,
             userId: session.id,
             signal: abortController.signal,
             onThreadReady: (threadId, title) => {

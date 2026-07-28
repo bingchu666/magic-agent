@@ -37,7 +37,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useSession } from "@/features/auth/session.client";
 import { consumeSseStream } from "@/features/chat-agent/sse";
-import { ChatHistoryMessage, Locale, Thread } from "@/lib/domain/types";
+import { ChatHistoryMessage, KnowledgeSourceRef, Locale, Thread } from "@/lib/domain/types";
 import { createId } from "@/lib/domain/utils";
 import { MiniTreeMap, type MiniTreeNode } from "@/lib/ui/MiniTreeMap";
 import {
@@ -54,7 +54,7 @@ type KnowledgeMessage = {
   role: "user" | "assistant";
   content: string;
   groundingChecked?: boolean;
-  knowledgeSources?: string[];
+  knowledgeSources?: KnowledgeSourceRef[];
 };
 
 type KnowledgeCard = {
@@ -80,6 +80,7 @@ type SpawnDraft = {
   relation: Exclude<CardRelation, "root">;
   value: string;
   sourceTerm?: string;
+  presetKnowledgeSources?: KnowledgeSourceRef[];
 };
 
 type TermPreview = {
@@ -132,6 +133,19 @@ function cleanTitle(value: string) {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 34);
+}
+
+const KNOWLEDGE_SOURCE_LABEL: Record<KnowledgeSourceRef["source"], string> = {
+  term: "术语库",
+  trick: "技巧库",
+};
+
+// Trick hits and term-glossary hits are visually indistinguishable if just
+// joined as plain titles — tag each with which table it actually came from.
+function formatKnowledgeSources(sources: KnowledgeSourceRef[]) {
+  return sources
+    .map((item) => `[${KNOWLEDGE_SOURCE_LABEL[item.source]}] ${item.title}`)
+    .join(" · ");
 }
 
 function lastAssistant(card: KnowledgeCard | undefined) {
@@ -216,6 +230,33 @@ async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
     throw new Error(data.error || `Request failed (${response.status})`);
   }
   return data;
+}
+
+/**
+ * Raw dictionary lookup (no AI, no translation) used to ground the
+ * "创建分支并放大" follow-up in the term-preview popover. A failed lookup
+ * should never block branch creation — it just means the follow-up proceeds
+ * without forced glossary grounding, same as before this existed.
+ */
+async function lookupMagicTermDefinition(
+  term: string
+): Promise<{ term: string; definition: string } | null> {
+  try {
+    const result = await apiJson<{ matched: boolean; term?: string; definition?: string }>(
+      "/api/explore",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "termLookup", term }),
+      }
+    );
+    return result.matched && result.definition
+      ? { term: result.term || term, definition: result.definition }
+      : null;
+  } catch (error) {
+    console.warn("Magic term glossary lookup failed", error);
+    return null;
+  }
 }
 
 function AnnotatedMarkdown({
@@ -319,7 +360,7 @@ function KnowledgeCardConversation({
                   <Check size={14} />
                   <div>
                     <strong>已引用数据库</strong>
-                    <span>{message.knowledgeSources.join(" · ")}</span>
+                    <span>{formatKnowledgeSources(message.knowledgeSources)}</span>
                   </div>
                 </div>
               ) : (
@@ -587,7 +628,11 @@ export function KnowledgeWorkspace() {
     return thread.id;
   };
 
-  const askCard = async (cardId: string, question: string) => {
+  const askCard = async (
+    cardId: string,
+    question: string,
+    presetKnowledgeSources?: KnowledgeSourceRef[]
+  ) => {
     const normalized = question.trim();
     if (!normalized) return;
     const card = cardsRef.current.find((item) => item.id === cardId);
@@ -640,6 +685,7 @@ export function KnowledgeWorkspace() {
           locale,
           clientHistory: history,
           responseMode: "annotated",
+          presetKnowledgeSources,
         }),
       });
       if (!response.ok) {
@@ -854,7 +900,7 @@ export function KnowledgeWorkspace() {
       // explicit, opt-in click on the size-toggle button.
       setExpandedCardId(null);
       setActiveCardId(child.id);
-      void askCard(child.id, question);
+      void askCard(child.id, question, draft.presetKnowledgeSources);
     } catch (error) {
       setSpawnError(error instanceof Error ? error.message : "无法创建分支卡片");
     } finally {
@@ -1274,12 +1320,23 @@ export function KnowledgeWorkspace() {
                 disabled={termPreview.loading || creatingCard}
                 onClick={() => {
                   setSpawnError("");
-                  void createChildCard({
-                    parentId: previewSourceCard.id,
-                    relation: "child",
-                    sourceTerm: termPreview.term,
-                    value: `请结合上游内容，深入解释“${termPreview.term}”。`,
-                  });
+                  const term = termPreview.term;
+                  void (async () => {
+                    const glossary = await lookupMagicTermDefinition(term);
+                    const value = glossary
+                      ? `请结合上游内容，深入解释“${term}”。\n\n术语库中该词条的权威定义如下，你的解释必须严格遵循这份定义，禁止编造、延伸或补充词典中没有的内容：\n${glossary.definition}`
+                      : `请结合上游内容，深入解释“${term}”。`;
+                    const presetKnowledgeSources: KnowledgeSourceRef[] | undefined = glossary
+                      ? [{ title: glossary.term, source: "term" }]
+                      : undefined;
+                    void createChildCard({
+                      parentId: previewSourceCard.id,
+                      relation: "child",
+                      sourceTerm: term,
+                      value,
+                      presetKnowledgeSources,
+                    });
+                  })();
                 }}
               >
                 {creatingCard ? (
