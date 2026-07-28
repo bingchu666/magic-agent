@@ -10,7 +10,6 @@ import {
   Languages,
   MessageCircleMore,
   Network,
-  Settings2,
   ShieldCheck,
   Sparkles,
   Video,
@@ -22,7 +21,6 @@ const userNav = [
   { href: "/chat", key: "chat" as const, icon: MessageCircleMore, hintZh: "线性对话与陪练", hintEn: "Chat & coaching" },
   { href: "/explore", key: "explore" as const, icon: Network, hintZh: "非线性知识地图", hintEn: "Knowledge maps" },
   { href: "/files", key: "files" as const, icon: FileStack, hintZh: "资料解析与洞察", hintEn: "Sources & insights" },
-  { href: "/settings", key: "settings" as const, icon: Settings2, hintZh: "偏好与账户", hintEn: "Preferences & account" },
 ];
 
 const adminNav = [

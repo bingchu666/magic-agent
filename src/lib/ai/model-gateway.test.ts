@@ -78,6 +78,19 @@ describe("model gateway prompt", () => {
     expect(system).toContain("retrieved database knowledge is optional supporting context");
   });
 
+  it("always identifies the product developers by name", () => {
+    process.env.MAGIC_AGENT_SYSTEM_PROMPT = "Use a concise teaching style.";
+    const system = systemMessage(
+      buildMessages(input({ userMessage: "你是谁开发的" }))
+    );
+
+    expect(system).toContain("赵秉初");
+    expect(system).toContain("Bingchu Zhao");
+    expect(system).toContain("杨思杰");
+    expect(system).toContain("Elizabeth Yang");
+    expect(system).toContain("Do not replace their names with a generic team description");
+  });
+
   it("allows a feature-scoped system prompt without changing the global persona", () => {
     process.env.MAGIC_AGENT_SYSTEM_PROMPT = "Global magic persona.";
     const system = systemMessage(
