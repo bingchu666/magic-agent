@@ -6266,17 +6266,24 @@ a {
   font-weight: 760;
 }
 
-.knowledge-stage-composer input {
+.knowledge-stage-composer textarea {
+  box-sizing: border-box;
   min-width: 0;
-  height: 40px;
+  min-height: 40px;
+  max-height: 140px; /* ~5-6 lines — keep in sync with COMPOSER_MAX_HEIGHT_PX */
+  padding: 10px 0;
   border: 0;
   outline: 0;
+  resize: none;
+  overflow-y: auto;
   color: var(--stage-ink);
   background: transparent;
+  font: inherit;
   font-size: 13px;
+  line-height: 1.5;
 }
 
-.knowledge-stage-composer input::placeholder {
+.knowledge-stage-composer textarea::placeholder {
   color: rgba(85, 99, 90, 0.56);
 }
 

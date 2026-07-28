@@ -92,6 +92,9 @@ type TermPreview = {
 };
 
 const STORAGE_KEY = "magic_atlas_glass_stage_v2";
+// Keep in sync with the max-height on .knowledge-stage-composer textarea —
+// caps auto-grow at roughly 5-6 lines before the textarea scrolls internally.
+const COMPOSER_MAX_HEIGHT_PX = 140;
 
 const relationMeta: Record<CardRelation, { label: string; prompt: string }> = {
   root: { label: "主线卡片", prompt: "建立项目的核心问题与共同背景" },
@@ -495,12 +498,24 @@ export function KnowledgeWorkspace() {
     !parentCard && stageBaseCard && expandedCardId === stageBaseCard.id
   );
   const inputValue = activeCard ? cardInputs[activeCard.id] ?? "" : "";
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     // Dragging is only remembered for as long as this card stays open —
     // reopening it (or switching to a different card) restores the default position.
     setChildCardDragPosition(null);
   }, [activeCard?.id]);
+
+  useEffect(() => {
+    // Auto-grow the composer with content, up to COMPOSER_MAX_HEIGHT_PX
+    // (~5-6 lines — see the matching max-height in .knowledge-stage-composer
+    // textarea), then let the textarea's own scrollbar take over. Re-measure
+    // whenever the visible text changes, including on card switches.
+    const el = composerTextareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_HEIGHT_PX)}px`;
+  }, [inputValue]);
 
   const handleChildCardDragStart = (event: React.PointerEvent<HTMLElement>) => {
     if (childExpanded) return;
@@ -1393,7 +1408,8 @@ export function KnowledgeWorkspace() {
             }}
           >
             <span className="knowledge-stage-model">AI</span>
-            <input
+            <textarea
+              ref={composerTextareaRef}
               value={inputValue}
               onChange={(event) =>
                 setCardInputs((previous) => ({
@@ -1401,7 +1417,15 @@ export function KnowledgeWorkspace() {
                   [activeCard.id]: event.target.value,
                 }))
               }
+              onKeyDown={(event) => {
+                if (event.nativeEvent.isComposing) return;
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  event.currentTarget.form?.requestSubmit();
+                }
+              }}
               placeholder="在当前卡片继续提问…"
+              rows={1}
               disabled={activeCard.status === "streaming"}
             />
             {activeCard.status === "streaming" ? (
