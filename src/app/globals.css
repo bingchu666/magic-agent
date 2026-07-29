@@ -6765,7 +6765,7 @@ a {
   position: absolute;
   z-index: 5;
   top: 50%;
-  left: 14px;
+  left: 0;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -6782,16 +6782,23 @@ a {
   font-size: 9px;
   font-weight: 700;
   cursor: pointer;
+  opacity: 0;
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
-  transform: translateY(-50%);
-  transition: 180ms ease;
+  transform: translate(-72%, -50%);
+  transition:
+    opacity 150ms ease,
+    color 180ms ease,
+    background 180ms ease,
+    transform 190ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.knowledge-stage-child-card-back:hover {
+.knowledge-stage-child-card-back:hover,
+.knowledge-stage-child-card-back:focus-visible {
   color: var(--stage-accent);
   background: rgba(255, 255, 255, 0.96);
-  transform: translateY(-50%) scale(1.04);
+  opacity: 1;
+  transform: translate(14px, -50%) scale(1.04);
 }
 
 /* "下一层" — scoped inside whichever card (.knowledge-stage-card or
@@ -6806,7 +6813,7 @@ a {
   position: absolute;
   z-index: 5;
   top: 50%;
-  right: 14px;
+  right: 0;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -6823,16 +6830,38 @@ a {
   font-size: 9px;
   font-weight: 700;
   cursor: pointer;
+  opacity: 0;
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
-  transform: translateY(-50%);
-  transition: 180ms ease;
+  transform: translate(72%, -50%);
+  transition:
+    opacity 150ms ease,
+    color 180ms ease,
+    background 180ms ease,
+    transform 190ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.knowledge-stage-card-forward:hover {
+.knowledge-stage-card-forward:hover,
+.knowledge-stage-card-forward:focus-visible {
   color: var(--stage-accent);
   background: rgba(255, 255, 255, 0.96);
-  transform: translateY(-50%) scale(1.04);
+  opacity: 1;
+  transform: translate(-14px, -50%) scale(1.04);
+}
+
+@media (hover: none) {
+  .knowledge-stage-child-card-back,
+  .knowledge-stage-card-forward {
+    opacity: 1;
+  }
+
+  .knowledge-stage-child-card-back {
+    transform: translate(14px, -50%);
+  }
+
+  .knowledge-stage-card-forward {
+    transform: translate(-14px, -50%);
+  }
 }
 
 @keyframes knowledge-card-enter {

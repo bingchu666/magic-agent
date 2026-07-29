@@ -1,8 +1,23 @@
 import { assertSession } from "@/features/auth/session.server";
 import { supabaseDb } from "@/lib/data/supabase-db";
 import { jsonError, jsonOk } from "@/lib/ui/api";
+import { createClient } from "@supabase/supabase-js";
 
 const MAX_FILE_SIZE = 25 * 1024 * 1024;
+
+function getStorageAdmin() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !serviceRoleKey) {
+    throw new Error("File storage is not configured");
+  }
+  return createClient(url, serviceRoleKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+  });
+}
 
 export async function POST(req: Request) {
   try {
@@ -40,13 +55,32 @@ export async function POST(req: Request) {
       },
     });
 
+    // The browser uploads directly to Supabase Storage. Proxying the file
+    // through this Next.js route would hit Vercel's 4.5 MB Function payload
+    // limit even though the product intentionally supports files up to 25 MB.
+    const { data: signedUpload, error: signedUploadError } = await getStorageAdmin()
+      .storage
+      .from("file-uploads")
+      .createSignedUploadUrl(file.storageKey, { upsert: true });
+    if (signedUploadError || !signedUpload?.signedUrl) {
+      await supabaseDb.deleteFile(file.id, session.id).catch(() => undefined);
+      throw new Error(
+        signedUploadError
+          ? `Failed to prepare direct upload: ${signedUploadError.message}`
+          : "Failed to prepare direct upload"
+      );
+    }
+
     return jsonOk({
       fileId: file.id,
-      uploadUrl: `/api/files/${file.id}/upload`,
+      uploadUrl: signedUpload.signedUrl,
       method: "PUT",
       expiresIn: 300,
+      uploadStrategy: "direct",
     });
   } catch (error) {
-    return jsonError(error instanceof Error ? error.message : "Unauthorized", 401);
+    const message = error instanceof Error ? error.message : "Unable to prepare upload";
+    console.error("[api/files/presign] failed", { message });
+    return jsonError(message, message === "UNAUTHORIZED" ? 401 : 500);
   }
 }

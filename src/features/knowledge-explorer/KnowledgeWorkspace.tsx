@@ -81,6 +81,7 @@ type KnowledgeCard = {
 type StoredWorkspace = {
   cards: KnowledgeCard[];
   activeCardId: string;
+  cardAttachmentIds: Record<string, string[]>;
 };
 
 type SpawnDraft = {
@@ -109,11 +110,28 @@ type PendingKnowledgeUpload = {
   localId: string;
   cardId: string;
   fileName: string;
+  fileId?: string;
   stage: "queued" | "uploading" | "processing" | "failed";
   error?: string;
 };
 
+type FileProcessingDetail = {
+  file: FileAsset;
+  jobs: Array<{
+    status: "queued" | "processing" | "done" | "failed";
+    error?: string;
+  }>;
+};
+
 const STORAGE_KEY = "magic_atlas_glass_stage_v2";
+const FILE_PROCESSING_TIMEOUT_MS = 180_000;
+const FILE_POLL_INTERVAL_MS = 800;
+
+function delay(ms: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
 
 const relationMetaByLocale: Record<
   Locale,
@@ -230,6 +248,20 @@ function collectDescendantIds(cards: KnowledgeCard[], cardId: string) {
     }
   }
   return ids;
+}
+
+function attachmentIdsFromMessageHistory(cards: KnowledgeCard[]) {
+  return cards.reduce<Record<string, string[]>>((result, card) => {
+    const ids = Array.from(
+      new Set(
+        card.messages.flatMap((message) =>
+          (message.attachments ?? []).map((attachment) => attachment.id)
+        )
+      )
+    );
+    if (ids.length > 0) result[card.id] = ids;
+    return result;
+  }, {});
 }
 
 async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -472,6 +504,37 @@ export function KnowledgeWorkspace() {
     setFiles(data.items);
   };
 
+  const waitForFileReady = async (fileId: string) => {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < FILE_PROCESSING_TIMEOUT_MS) {
+      const detail = await apiJson<FileProcessingDetail>(`/api/files/${fileId}`);
+      setFiles((previous) => {
+        const withoutCurrent = previous.filter((file) => file.id !== detail.file.id);
+        return [detail.file, ...withoutCurrent];
+      });
+
+      if (detail.file.status === "ready") return detail.file;
+      if (detail.file.status === "failed") {
+        const jobError = detail.jobs.find((job) => job.status === "failed")?.error;
+        throw new Error(
+          locale === "zh"
+            ? `文件解析失败${jobError ? `：${jobError}` : ""}`
+            : `File parsing failed${jobError ? `: ${jobError}` : ""}`
+        );
+      }
+      if (detail.file.status === "expired") {
+        throw new Error(locale === "zh" ? "文件已过期" : "The file expired");
+      }
+      await delay(FILE_POLL_INTERVAL_MS);
+    }
+
+    throw new Error(
+      locale === "zh"
+        ? "文件解析超时，请稍后在资料库中查看状态。"
+        : "File processing timed out. Check its status in the source library."
+    );
+  };
+
   useEffect(() => {
     activeCardIdRef.current = activeCardId;
   }, [activeCardId]);
@@ -537,12 +600,36 @@ export function KnowledgeWorkspace() {
       const raw = window.localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const stored = JSON.parse(raw) as Partial<StoredWorkspace>;
-        if (Array.isArray(stored.cards) && stored.cards.length > 0) {
-          commitCards(stored.cards);
-          const storedActive = stored.cards.some((card) => card.id === stored.activeCardId)
+        const storedCards =
+          Array.isArray(stored.cards) && stored.cards.length > 0
+            ? stored.cards
+            : [];
+        if (storedCards.length > 0) {
+          commitCards(storedCards);
+          const storedActive = storedCards.some((card) => card.id === stored.activeCardId)
             ? stored.activeCardId
-            : stored.cards[0].id;
-          setActiveCardId(storedActive ?? stored.cards[0].id);
+            : storedCards[0].id;
+          setActiveCardId(storedActive ?? storedCards[0].id);
+        }
+        if (
+          stored.cardAttachmentIds &&
+          typeof stored.cardAttachmentIds === "object"
+        ) {
+          const restored = Object.entries(stored.cardAttachmentIds).reduce<
+            Record<string, string[]>
+          >((result, [cardId, ids]) => {
+            const validIds = Array.isArray(ids)
+              ? ids.filter((id): id is string => typeof id === "string")
+              : [];
+            if (validIds.length > 0) result[cardId] = validIds;
+            return result;
+          }, {});
+          setCardAttachmentIds(restored);
+        } else if (storedCards.length > 0) {
+          // Older workspace versions cleared attachment state after the first
+          // question. Recover it from the attachment metadata already stored
+          // on that card's user message so existing conversations keep working.
+          setCardAttachmentIds(attachmentIdsFromMessageHistory(storedCards));
         }
       }
       const storedSidebar = window.localStorage.getItem(
@@ -557,9 +644,13 @@ export function KnowledgeWorkspace() {
 
   useEffect(() => {
     if (!hydrated) return;
-    const workspace: StoredWorkspace = { cards, activeCardId };
+    const workspace: StoredWorkspace = {
+      cards,
+      activeCardId,
+      cardAttachmentIds,
+    };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(workspace));
-  }, [activeCardId, cards, hydrated]);
+  }, [activeCardId, cardAttachmentIds, cards, hydrated]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -855,6 +946,8 @@ export function KnowledgeWorkspace() {
     try {
       for (const [index, file] of incomingFiles.entries()) {
         const pending = pendingItems[index];
+        let createdFileId = "";
+        let processingEnqueued = false;
         try {
           setPendingUploads((previous) =>
             previous.map((item) =>
@@ -874,14 +967,34 @@ export function KnowledgeWorkspace() {
               size: file.size,
             }),
           });
+          createdFileId = presign.fileId;
+          setPendingUploads((previous) =>
+            previous.map((item) =>
+              item.localId === pending.localId
+                ? { ...item, fileId: presign.fileId }
+                : item
+            )
+          );
 
           const uploadResponse = await fetch(presign.uploadUrl, {
             method: presign.method,
-            headers: { "Content-Type": file.type || "application/octet-stream" },
+            headers: {
+              "Content-Type": file.type || "application/octet-stream",
+              "x-upsert": "true",
+            },
             body: file,
           });
           if (!uploadResponse.ok) {
-            throw new Error(locale === "zh" ? "上传失败" : "Upload failed");
+            const uploadError = (await uploadResponse.json().catch(() => null)) as
+              | { error?: string; message?: string }
+              | null;
+            throw new Error(
+              uploadError?.error ||
+                uploadError?.message ||
+                (locale === "zh"
+                  ? `文件传输失败（${uploadResponse.status}）`
+                  : `File transfer failed (${uploadResponse.status})`)
+            );
           }
 
           setPendingUploads((previous) =>
@@ -890,11 +1003,18 @@ export function KnowledgeWorkspace() {
             )
           );
           await apiJson(`/api/files/${presign.fileId}/enqueue`, { method: "POST" });
+          processingEnqueued = true;
+          await waitForFileReady(presign.fileId);
           uploadedIds.push(presign.fileId);
           setPendingUploads((previous) =>
             previous.filter((item) => item.localId !== pending.localId)
           );
         } catch (error) {
+          if (createdFileId && !processingEnqueued) {
+            void fetch(`/api/files/${createdFileId}`, { method: "DELETE" }).catch(
+              () => undefined
+            );
+          }
           setPendingUploads((previous) =>
             previous.map((item) =>
               item.localId === pending.localId
@@ -936,6 +1056,32 @@ export function KnowledgeWorkspace() {
   const askCard = async (cardId: string, question: string) => {
     const quotedText = cardSelectionContexts[cardId]?.trim() || "";
     const attachmentIdsForMessage = cardAttachmentIds[cardId] ?? [];
+    const hasPendingFile = pendingUploads.some(
+      (file) => file.cardId === cardId && file.stage !== "failed"
+    );
+    if (hasPendingFile) {
+      setPageError(
+        locale === "zh"
+          ? "请等待文件解析完成后再提问。"
+          : "Wait for file processing to finish before asking."
+      );
+      return;
+    }
+
+    const resolvedAttachments = attachmentIdsForMessage.map((fileId) =>
+      files.find((file) => file.id === fileId)
+    );
+    const hasUnavailableAttachment =
+      resolvedAttachments.some((file) => !file || file.status !== "ready");
+    if (hasUnavailableAttachment) {
+      setPageError(
+        locale === "zh"
+          ? "附件正文尚未准备好，请等待解析完成或移除该附件。"
+          : "The attachment text is not ready. Wait for processing or remove it."
+      );
+      return;
+    }
+
     const attachmentsForMessage = attachmentIdsForMessage
       .map((fileId) => files.find((file) => file.id === fileId))
       .filter((file): file is FileAsset => Boolean(file))
@@ -996,11 +1142,13 @@ export function KnowledgeWorkspace() {
     );
     setCardInputs((previous) => ({ ...previous, [cardId]: "" }));
     setCardSelectionContexts((previous) => ({ ...previous, [cardId]: "" }));
-    setCardAttachmentIds((previous) => ({ ...previous, [cardId]: [] }));
     setUploadMenuOpen(false);
 
     const abortController = new AbortController();
     abortControllersRef.current.set(cardId, abortController);
+    const isCurrentGeneration = () =>
+      abortControllersRef.current.get(cardId) === abortController &&
+      !abortController.signal.aborted;
 
     try {
       const current = cardsRef.current.find((item) => item.id === cardId);
@@ -1032,6 +1180,7 @@ export function KnowledgeWorkspace() {
       let streamError = "";
       await consumeSseStream(response, {
         thread: ({ threadId, title }) => {
+          if (!isCurrentGeneration()) return;
           commitCards((previous) =>
             previous.map((item) =>
               item.id === cardId ? { ...item, threadId, title: title || item.title } : item
@@ -1039,6 +1188,7 @@ export function KnowledgeWorkspace() {
           );
         },
         token: ({ text }) => {
+          if (!isCurrentGeneration()) return;
           commitCards((previous) =>
             previous.map((item) =>
               item.id === cardId
@@ -1055,6 +1205,7 @@ export function KnowledgeWorkspace() {
           );
         },
         done: ({ knowledgeSources, annotatedText }) => {
+          if (!isCurrentGeneration()) return;
           commitCards((previous) =>
             previous.map((item) =>
               item.id === cardId
@@ -1078,11 +1229,13 @@ export function KnowledgeWorkspace() {
           );
         },
         error: ({ message }) => {
+          if (!isCurrentGeneration()) return;
           streamError = message;
         },
-      });
+      }, { signal: abortController.signal });
       if (streamError) throw new Error(streamError);
 
+      if (!isCurrentGeneration()) return;
       commitCards((previous) =>
         previous.map((item) =>
           item.id === cardId
@@ -1095,7 +1248,9 @@ export function KnowledgeWorkspace() {
         )
       );
     } catch (error) {
-      const isUserAbort = (error as { name?: string } | null)?.name === "AbortError";
+      const isUserAbort =
+        abortController.signal.aborted ||
+        (error as { name?: string } | null)?.name === "AbortError";
 
       if (isUserAbort) {
         // The user clicked "stop" — whatever streamed in so far (already in
@@ -1147,12 +1302,31 @@ export function KnowledgeWorkspace() {
         setPageError(message);
       }
     } finally {
-      abortControllersRef.current.delete(cardId);
+      if (abortControllersRef.current.get(cardId) === abortController) {
+        abortControllersRef.current.delete(cardId);
+      }
     }
   };
 
   const stopCardGeneration = (cardId: string) => {
-    abortControllersRef.current.get(cardId)?.abort();
+    const controller = abortControllersRef.current.get(cardId);
+    if (!controller || controller.signal.aborted) return;
+
+    console.info("[knowledge-stream] stop requested", { cardId });
+    controller.abort();
+    // Reflect the stop immediately instead of waiting for the pending reader
+    // to reject. Late events are ignored by isCurrentGeneration().
+    commitCards((previous) =>
+      previous.map((item) =>
+        item.id === cardId
+          ? {
+              ...item,
+              status: "idle",
+              unread: item.id !== activeCardIdRef.current,
+            }
+          : item
+      )
+    );
   };
 
   const createBlankRootCard = () => {
@@ -1772,6 +1946,8 @@ export function KnowledgeWorkspace() {
             }`}
             onSubmit={(event) => {
               event.preventDefault();
+              const current = cardsRef.current.find((item) => item.id === activeCard.id);
+              if (current?.status === "streaming") return;
               void askCard(activeCard.id, inputValue);
             }}
             onDragEnter={(event) => {
@@ -1957,7 +2133,11 @@ export function KnowledgeWorkspace() {
             {activeCard.status === "streaming" ? (
               <button
                 type="button"
-                onClick={() => stopCardGeneration(activeCard.id)}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  stopCardGeneration(activeCard.id);
+                }}
                 aria-label={locale === "zh" ? "停止生成" : "Stop generating"}
                 title={locale === "zh" ? "停止生成" : "Stop generating"}
               >
@@ -1967,7 +2147,9 @@ export function KnowledgeWorkspace() {
               <button
                 type="submit"
                 disabled={
-                  (!inputValue.trim() && activeAttachments.length === 0) || uploadingFiles
+                  (!inputValue.trim() && activeAttachments.length === 0) ||
+                  uploadingFiles ||
+                  activePendingUploads.some((file) => file.stage !== "failed")
                 }
                 aria-label={locale === "zh" ? "发送" : "Send"}
               >

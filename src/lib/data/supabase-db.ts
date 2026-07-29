@@ -506,6 +506,23 @@ export const supabaseDb = {
     return files;
   },
 
+  async listFilesByIds(userId: string, ids: string[]): Promise<FileAsset[]> {
+    if (ids.length === 0) return [];
+    const supabase = await sc();
+    const { data, error } = await supabase
+      .from("file_assets")
+      .select("*")
+      .eq("user_id", userId)
+      .in("id", ids);
+
+    assertNoError(error, "Failed to load attached files");
+    const files = fromDatabaseRows<FileAsset>(data);
+    const fileById = new Map(files.map((file) => [file.id, file]));
+    return ids
+      .map((id) => fileById.get(id))
+      .filter((file): file is FileAsset => Boolean(file));
+  },
+
   async getFile(fileId: string): Promise<FileAsset | null> {
     const supabase = await sc();
     const { data, error } = await supabase.from("file_assets").select("*").eq("id", fileId).maybeSingle();
@@ -636,6 +653,67 @@ export const supabaseDb = {
     return insight;
   },
 
+  async replaceFileInsights(
+    fileId: string,
+    userId: string,
+    payloads: Array<Pick<FileInsight, "kind" | "locale" | "content">>
+  ): Promise<FileInsight[]> {
+    const supabase = await sc();
+    const { error: deleteError } = await supabase
+      .from("file_insights")
+      .delete()
+      .eq("file_id", fileId)
+      .eq("user_id", userId);
+    assertNoError(deleteError, "Failed to replace file insights");
+
+    if (payloads.length === 0) return [];
+    const createdAt = nowIso();
+    const insights: FileInsight[] = payloads.map((payload) => ({
+      id: createId("insight"),
+      fileId,
+      userId,
+      createdAt,
+      ...payload,
+    }));
+    const { error: insertError } = await supabase
+      .from("file_insights")
+      .insert(insights.map(toDatabaseRow));
+    assertNoError(insertError, "Failed to save file insights");
+    return insights;
+  },
+
+  async replaceFileSummaryInsights(
+    fileId: string,
+    userId: string,
+    summaries: Array<Pick<FileInsight, "locale" | "content">>
+  ): Promise<FileInsight[]> {
+    const supabase = await sc();
+    const { error: deleteError } = await supabase
+      .from("file_insights")
+      .delete()
+      .eq("file_id", fileId)
+      .eq("user_id", userId)
+      .eq("kind", "summary");
+    assertNoError(deleteError, "Failed to replace file summaries");
+
+    const createdAt = nowIso();
+    const insights: FileInsight[] = summaries.map((summary) => ({
+      id: createId("insight"),
+      fileId,
+      userId,
+      kind: "summary",
+      locale: summary.locale,
+      content: summary.content,
+      createdAt,
+    }));
+    if (insights.length === 0) return [];
+    const { error: insertError } = await supabase
+      .from("file_insights")
+      .insert(insights.map(toDatabaseRow));
+    assertNoError(insertError, "Failed to save file summaries");
+    return insights;
+  },
+
   async listFileInsightsByIds(userId: string, ids: string[]): Promise<FileInsight[]> {
     if (ids.length === 0) return [];
     const supabase = await sc();
@@ -643,7 +721,8 @@ export const supabaseDb = {
       .from("file_insights")
       .select("*")
       .eq("user_id", userId)
-      .in("file_id", ids);
+      .in("file_id", ids)
+      .order("created_at", { ascending: true });
     assertNoError(error, "Failed to list file insights");
     return fromDatabaseRows<FileInsight>(data);
   },

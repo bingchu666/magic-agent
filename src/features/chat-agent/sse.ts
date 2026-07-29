@@ -6,7 +6,8 @@ type Handlers = {
 
 export async function consumeSseStream(
   response: Response,
-  handlers: Handlers
+  handlers: Handlers,
+  options: { signal?: AbortSignal } = {}
 ): Promise<void> {
   if (!response.body) {
     throw new Error("Streaming body is empty");
@@ -15,34 +16,57 @@ export async function consumeSseStream(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  const abortError = () => new DOMException("Generation stopped", "AbortError");
+  const cancelReader = () => {
+    void reader.cancel(options.signal?.reason).catch(() => {
+      // An aborted fetch can error the body before cancel() settles.
+    });
+  };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  if (options.signal?.aborted) {
+    cancelReader();
+    throw abortError();
+  }
+  options.signal?.addEventListener("abort", cancelReader, { once: true });
 
-    buffer += decoder.decode(value, { stream: true });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    const chunks = buffer.split("\n\n");
-    buffer = chunks.pop() ?? "";
+      buffer += decoder.decode(value, { stream: true });
 
-    for (const block of chunks) {
-      const lines = block.split("\n");
-      const eventLine = lines.find((line) => line.startsWith("event:"));
-      const dataLine = lines.find((line) => line.startsWith("data:"));
+      const chunks = buffer.split("\n\n");
+      buffer = chunks.pop() ?? "";
 
-      if (!eventLine || !dataLine) continue;
+      for (const block of chunks) {
+        const lines = block.split("\n");
+        const eventLine = lines.find((line) => line.startsWith("event:"));
+        const dataLine = lines.find((line) => line.startsWith("data:"));
 
-      const event = eventLine.replace("event:", "").trim() as SseEventType;
-      const payloadText = dataLine.replace("data:", "").trim();
-      if (!payloadText) continue;
+        if (!eventLine || !dataLine) continue;
 
-      try {
-        const payload = JSON.parse(payloadText) as ChatSsePayloadMap[typeof event];
-        const handler = handlers[event] as ((value: typeof payload) => void) | undefined;
-        if (handler) handler(payload);
-      } catch (error) {
-        console.warn("Failed to parse SSE payload", error);
+        const event = eventLine.replace("event:", "").trim() as SseEventType;
+        const payloadText = dataLine.replace("data:", "").trim();
+        if (!payloadText) continue;
+
+        try {
+          const payload = JSON.parse(payloadText) as ChatSsePayloadMap[typeof event];
+          const handler = handlers[event] as ((value: typeof payload) => void) | undefined;
+          if (handler) handler(payload);
+        } catch (error) {
+          console.warn("Failed to parse SSE payload", error);
+        }
       }
     }
+  } catch (error) {
+    if (options.signal?.aborted) throw abortError();
+    throw error;
+  } finally {
+    options.signal?.removeEventListener("abort", cancelReader);
   }
+
+  // reader.cancel() resolves a pending read with done=true in some browsers,
+  // so explicitly preserve AbortError semantics for the caller.
+  if (options.signal?.aborted) throw abortError();
 }
