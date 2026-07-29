@@ -1,6 +1,14 @@
 import { assertSession } from "@/features/auth/session.server";
-import { enqueueFileProcessing } from "@/features/file-intelligence/processor";
+import {
+  enqueueFileProcessing,
+  processFileJob,
+} from "@/features/file-intelligence/processor";
+import { withRequestCookie } from "@/lib/data/supabase-db";
 import { jsonError, jsonOk } from "@/lib/ui/api";
+import { after } from "next/server";
+
+export const maxDuration = 300;
+export const runtime = "nodejs";
 
 export async function POST(req: Request, { params }: { params: Promise<{ fileId: string }> }) {
   try {
@@ -9,6 +17,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ fileId:
     const job = await enqueueFileProcessing({
       fileId,
       userId: session.id,
+    });
+    const cookieHeader = req.headers.get("cookie") ?? "";
+    after(async () => {
+      await withRequestCookie(cookieHeader, () => processFileJob(job.id));
     });
 
     return jsonOk({

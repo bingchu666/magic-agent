@@ -56,6 +56,14 @@ export async function POST(req: Request) {
     if (!body?.userMessage || typeof body.userMessage !== "string") {
       return new Response("Missing userMessage", { status: 400 });
     }
+    const attachmentIds = Array.isArray(body.attachmentIds)
+      ? body.attachmentIds
+          .filter(
+            (attachmentId): attachmentId is string =>
+              typeof attachmentId === "string" && attachmentId.trim().length > 0
+          )
+          .slice(0, 10)
+      : [];
 
     // Capture cookies before entering the ReadableStream —
     // next/headers cookies() is unavailable inside the stream callback.
@@ -66,6 +74,20 @@ export async function POST(req: Request) {
     // stream (e.g. the user clicked "stop generating" and the fetch was
     // aborted, or the tab/connection closed).
     const abortController = new AbortController();
+    const streamStartedAt = Date.now();
+    const abortFromRequest = () => {
+      if (abortController.signal.aborted) return;
+      console.info("[chat-stream] request aborted", {
+        threadId: body.threadId || null,
+        durationMs: Date.now() - streamStartedAt,
+      });
+      abortController.abort(req.signal.reason);
+    };
+    if (req.signal.aborted) {
+      abortFromRequest();
+    } else {
+      req.signal.addEventListener("abort", abortFromRequest, { once: true });
+    }
 
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
@@ -93,7 +115,7 @@ export async function POST(req: Request) {
             threadId: body.threadId,
             userMessage: body.userMessage,
             locale: body.locale === "en" ? "en" : "zh",
-            attachmentIds: Array.isArray(body.attachmentIds) ? body.attachmentIds : [],
+            attachmentIds,
             clientHistory: normalizeChatHistory(body.clientHistory),
             responseMode: body.responseMode === "annotated" ? "annotated" : "plain",
             presetKnowledgeSources: Array.isArray(body.presetKnowledgeSources)
@@ -170,6 +192,7 @@ export async function POST(req: Request) {
             write("error", { message });
           }
         } finally {
+          req.signal.removeEventListener("abort", abortFromRequest);
           try {
             controller.close();
           } catch {
@@ -179,8 +202,13 @@ export async function POST(req: Request) {
         }); // withRequestCookie
       },
       cancel(reason) {
-        console.warn("SSE canceled", reason);
-        abortController.abort(reason);
+        console.info("[chat-stream] response canceled", {
+          threadId: body.threadId || null,
+          durationMs: Date.now() - streamStartedAt,
+        });
+        if (!abortController.signal.aborted) {
+          abortController.abort(reason);
+        }
       },
     });
 

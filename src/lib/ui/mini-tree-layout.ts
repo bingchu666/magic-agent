@@ -2,6 +2,8 @@ export type MiniTreeNode = {
   id: string;
   parentId: string | null;
   label: string;
+  eyebrow?: string;
+  summary?: string;
   relation?: "root" | "child" | "related" | "branch";
   unread?: boolean;
 };

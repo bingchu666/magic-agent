@@ -88,32 +88,54 @@ export function FileWorkspace() {
 
     try {
       for (const file of Array.from(list)) {
-        const presign = await apiJson<{
-          fileId: string;
-          uploadUrl: string;
-          method: "PUT";
-        }>("/api/files/presign", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            fileName: file.name,
-            mimeType: file.type || "application/octet-stream",
-            size: file.size,
-          }),
-        });
+        let createdFileId = "";
+        try {
+          const presign = await apiJson<{
+            fileId: string;
+            uploadUrl: string;
+            method: "PUT";
+          }>("/api/files/presign", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              fileName: file.name,
+              mimeType: file.type || "application/octet-stream",
+              size: file.size,
+            }),
+          });
+          createdFileId = presign.fileId;
 
-        const uploadRes = await fetch(presign.uploadUrl, {
-          method: presign.method,
-          body: await file.arrayBuffer(),
-        });
+          const uploadRes = await fetch(presign.uploadUrl, {
+            method: presign.method,
+            headers: {
+              "Content-Type": file.type || "application/octet-stream",
+              "x-upsert": "true",
+            },
+            body: file,
+          });
 
-        if (!uploadRes.ok) {
-          throw new Error(`Upload failed for ${file.name}`);
+          if (!uploadRes.ok) {
+            const uploadError = (await uploadRes.json().catch(() => null)) as
+              | { error?: string; message?: string }
+              | null;
+            throw new Error(
+              uploadError?.error ||
+                uploadError?.message ||
+                `Upload failed for ${file.name} (${uploadRes.status})`
+            );
+          }
+
+          await apiJson(`/api/files/${presign.fileId}/enqueue`, {
+            method: "POST",
+          });
+        } catch (uploadError) {
+          if (createdFileId) {
+            void fetch(`/api/files/${createdFileId}`, { method: "DELETE" }).catch(
+              () => undefined
+            );
+          }
+          throw uploadError;
         }
-
-        await apiJson(`/api/files/${presign.fileId}/enqueue`, {
-          method: "POST",
-        });
       }
 
       await loadFiles();

@@ -4,6 +4,7 @@ import type { User } from "@supabase/supabase-js";
 export type SessionUser = {
   id: string;
   name: string;
+  email?: string;
   role: UserRole;
   locale: Locale;
 };
@@ -23,6 +24,7 @@ export function supabaseUserToSessionUser(user: User, profile?: SessionProfile):
   const meta = user.user_metadata ?? {};
   return {
     id: user.id,
+    email: user.email,
     name: typeof profile?.name === "string"
       ? profile.name
       : typeof meta.name === "string"

@@ -25,6 +25,14 @@ function latestUserMessage(messages: ReturnType<typeof buildMessages>) {
   return [...messages].reverse().find((message) => message.role === "user")?.content || "";
 }
 
+function attachedFileMessage(messages: ReturnType<typeof buildMessages>) {
+  return messages.find(
+    (message) =>
+      message.role === "user" &&
+      message.content.includes("Attached-file context")
+  )?.content || "";
+}
+
 describe("model gateway prompt", () => {
   const originalSystemPrompt = process.env.MAGIC_AGENT_SYSTEM_PROMPT;
 
@@ -70,12 +78,73 @@ describe("model gateway prompt", () => {
     expect(system).toContain("Do not invent citations");
   });
 
+  it("forbids guessing attached-file contents from the filename", () => {
+    const messages = buildMessages(
+      input({
+        userMessage: "详细讲解这本书",
+        fileContext:
+          "Attached file: Confident Deceptions.pdf\nProcessing status: ready\n[Page 42]\nHold the wallet over the table.",
+      })
+    );
+    const system = systemMessage(messages);
+    const user = latestUserMessage(messages);
+    const file = attachedFileMessage(messages);
+
+    expect(system).toContain("Attached-file policy");
+    expect(system).toContain("Never infer contents");
+    expect(system).toContain("filename");
+    expect(system).toContain("use the entire document");
+    expect(system).toContain("Answer page-specific questions");
+    expect(system).toContain("do not fill gaps");
+    expect(file).toContain("authoritative for this file");
+    expect(file).toContain("Hold the wallet over the table");
+    expect(user).toContain("详细讲解这本书");
+    expect(user).toContain("overrides unsupported or contradictory claims");
+  });
+
+  it("places complete file context before history for reusable prompt caching", () => {
+    const documentText = `[Page 1]\n${"document ".repeat(3000)}`;
+    const messages = buildMessages(
+      input({
+        userMessage: "第十二页讲什么？",
+        history: [{ role: "user", content: "先介绍作者" }],
+        fileContext: documentText,
+      })
+    );
+    const fileIndex = messages.findIndex((message) =>
+      message.content.includes("Attached-file context")
+    );
+    const historyIndex = messages.findIndex(
+      (message) => message.content === "先介绍作者"
+    );
+
+    expect(fileIndex).toBeGreaterThan(0);
+    expect(fileIndex).toBeLessThan(historyIndex);
+    expect(messages[fileIndex].content).toContain(documentText.trim());
+    expect(messages[fileIndex].content.length).toBeGreaterThan(
+      documentText.trim().length
+    );
+  });
+
   it("keeps the retrieval fallback policy when a custom persona is configured", () => {
     process.env.MAGIC_AGENT_SYSTEM_PROMPT = "Use a concise teaching style.";
     const system = systemMessage(buildMessages(input()));
 
     expect(system).toContain("Use a concise teaching style.");
     expect(system).toContain("retrieved database knowledge is optional supporting context");
+  });
+
+  it("always identifies the product developers by name", () => {
+    process.env.MAGIC_AGENT_SYSTEM_PROMPT = "Use a concise teaching style.";
+    const system = systemMessage(
+      buildMessages(input({ userMessage: "你是谁开发的" }))
+    );
+
+    expect(system).toContain("赵秉初");
+    expect(system).toContain("Bingchu Zhao");
+    expect(system).toContain("杨思杰");
+    expect(system).toContain("Elizabeth Yang");
+    expect(system).toContain("Do not replace their names with a generic team description");
   });
 
   it("allows a feature-scoped system prompt without changing the global persona", () => {

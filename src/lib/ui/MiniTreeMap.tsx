@@ -1,6 +1,7 @@
 "use client";
 
 import clsx from "clsx";
+import { useState } from "react";
 import {
   MINI_TREE_VIEWBOX_WIDTH,
   getMiniTreeCanvasHeight,
@@ -15,7 +16,15 @@ type MiniTreeMapProps = {
   activeId: string | null;
   onSelect: (nodeId: string) => void;
   label: string;
+  currentLabel?: string;
   className?: string;
+};
+
+type NodePreview = {
+  node: MiniTreeNode;
+  left: number;
+  top: number;
+  placement: "above" | "below";
 };
 
 export function MiniTreeMap({
@@ -23,8 +32,10 @@ export function MiniTreeMap({
   activeId,
   onSelect,
   label,
+  currentLabel = "Current",
   className,
 }: MiniTreeMapProps) {
+  const [preview, setPreview] = useState<NodePreview | null>(null);
   const positioned = positionMiniTreeNodes(nodes);
   const canvasHeight = getMiniTreeCanvasHeight(nodes);
   const positionById = new Map(positioned.map((node) => [node.id, node]));
@@ -36,6 +47,35 @@ export function MiniTreeMap({
       ? positionById.get(pathNode.parentId)
       : undefined;
   }
+
+  const showPreview = (
+    node: MiniTreeNode,
+    target: HTMLButtonElement
+  ) => {
+    const rect = target.getBoundingClientRect();
+    const treeRect =
+      target.closest<HTMLElement>(".magic-mini-tree")?.getBoundingClientRect() ??
+      rect;
+    const previewWidth = 174;
+    const previewHeight = 78;
+    const gap = 10;
+    const placement = rect.top - previewHeight - gap >= 12 ? "above" : "below";
+    setPreview({
+      node,
+      left: Math.max(
+        12,
+        Math.min(
+          treeRect.left + (treeRect.width - previewWidth) / 2,
+          window.innerWidth - previewWidth - 12
+        )
+      ),
+      top:
+        placement === "above"
+          ? rect.top - previewHeight - gap
+          : Math.min(rect.bottom + gap, window.innerHeight - previewHeight - 12),
+      placement,
+    });
+  };
 
   return (
     <nav className={clsx("magic-mini-tree", className)} aria-label={label}>
@@ -81,13 +121,36 @@ export function MiniTreeMap({
             )}
             style={{ left: `${node.x}%`, top: node.y }}
             onClick={() => onSelect(node.id)}
+            onMouseEnter={(event) => showPreview(node, event.currentTarget)}
+            onMouseLeave={() => setPreview(null)}
+            onFocus={(event) => showPreview(node, event.currentTarget)}
+            onBlur={() => setPreview(null)}
             aria-label={`定位到：${node.label}`}
-            title={node.label}
+            aria-describedby={preview?.node.id === node.id ? `tree_preview_${node.id}` : undefined}
           >
             <span />
           </button>
         ))}
       </div>
+
+      {preview ? (
+        <div
+          id={`tree_preview_${preview.node.id}`}
+          className={clsx(
+            "magic-mini-tree-preview",
+            `relation-${preview.node.relation ?? "child"}`,
+            `is-${preview.placement}`,
+            preview.node.id === activeId && "is-active"
+          )}
+          style={{ left: preview.left, top: preview.top }}
+          role="tooltip"
+        >
+          <span>{preview.node.eyebrow || preview.node.relation || "Card"}</span>
+          <strong>{preview.node.label}</strong>
+          {preview.node.summary ? <p>{preview.node.summary}</p> : null}
+          {preview.node.id === activeId ? <i>{currentLabel}</i> : null}
+        </div>
+      ) : null}
     </nav>
   );
 }
