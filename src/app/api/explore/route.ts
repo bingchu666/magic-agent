@@ -14,6 +14,12 @@ const GLOSSARY_TRANSLATE_SYSTEM_PROMPT =
   "add, remove, or guess at information beyond what's given. Keep any bracketed rarity/era notes " +
   "(e.g. \"[obsolete after 1896]\") translated too. Output only the translated definition, no heading.";
 
+const BIO_TRANSLATE_SYSTEM_PROMPT =
+  "You are a precise translator for a magician biographical dictionary (Who's Who in Magic). " +
+  "Translate the given English biography entry into natural, concise Chinese. Preserve its factual " +
+  "content exactly — do not add, remove, invent, or guess at any biographical detail (dates, places, " +
+  "names, effects) beyond what's given. Output only the translated biography, no heading.";
+
 /** Collapse OCR/reference-book whitespace noise without touching wording. */
 function normalizeDefinition(text: string) {
   return text.trim().replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n");
@@ -41,6 +47,26 @@ async function respondWithGlossaryMatch(rawDefinition: string, locale: Locale) {
   return NextResponse.json({ text: definition, provider: "glossary", source: "glossary" });
 }
 
+/** Serve a magician-bio hit: English as-is, or translated to Chinese for zh
+ * locale. Mirrors respondWithGlossaryMatch — see that function's comments. */
+async function respondWithMagicianMatch(rawBio: string, locale: Locale) {
+  const bio = normalizeDefinition(rawBio);
+  if (locale === "zh") {
+    const translated = await generateWithGateway({
+      locale: "zh",
+      intent: "translation",
+      userMessage: bio,
+      history: [],
+      fileContext: "",
+      systemPrompt: BIO_TRANSLATE_SYSTEM_PROMPT,
+    });
+    if (translated.provider !== "rule") {
+      return NextResponse.json({ text: translated.text, provider: translated.provider, source: "magician" });
+    }
+  }
+  return NextResponse.json({ text: bio, provider: "magician", source: "magician" });
+}
+
 type ExploreUtilityBody = {
   mode?: "preview" | "validate" | "summarize" | "termLookup";
   locale?: Locale;
@@ -61,12 +87,26 @@ export async function POST(req: Request) {
     const locale: Locale = body.locale === "en" ? "en" : "zh";
     let prompt = "";
 
-    // Raw glossary lookup for callers that need the dictionary's own text as
-    // grounding material (e.g. forcing a follow-up generation to stick to
-    // it) rather than a user-facing, possibly-translated preview string.
+    // Raw dictionary lookup for callers that need the dictionary's own text
+    // as grounding material (e.g. forcing a "create branch and expand"
+    // follow-up generation to stick to it) rather than a user-facing,
+    // possibly-translated preview string. Checks the magician biography
+    // dictionary first, then the term glossary — same order as "preview"
+    // mode below, for the same reason (see its comment).
     if (body.mode === "termLookup") {
       const term = clip(body.term, 160);
       if (!term) return NextResponse.json({ error: "Missing term" }, { status: 400 });
+
+      const magicianMatch = await supabaseDb.findExactMagician(term);
+      if (magicianMatch) {
+        return NextResponse.json({
+          matched: true,
+          term: magicianMatch.name,
+          definition: normalizeDefinition(magicianMatch.bio),
+          source: "person",
+        });
+      }
+
       const glossaryMatch =
         (await supabaseDb.findExactMagicTerm(term)) ?? (await supabaseDb.findSimilarMagicTerm(term));
       return NextResponse.json(
@@ -75,6 +115,7 @@ export async function POST(req: Request) {
               matched: true,
               term: glossaryMatch.term,
               definition: normalizeDefinition(glossaryMatch.definition),
+              source: "term",
             }
           : { matched: false }
       );
@@ -83,6 +124,16 @@ export async function POST(req: Request) {
     if (body.mode === "preview") {
       const term = clip(body.term, 160);
       if (!term) return NextResponse.json({ error: "Missing term" }, { status: 400 });
+
+      // Check the magician biography dictionary first — a person's name
+      // clicked in the workspace should show their actual bio, not an
+      // AI-guessed one. Exact match only (see findExactMagician); no
+      // semantic fallback since names don't have the
+      // Chinese-concept-vs-English-headword mismatch that terms do.
+      const magicianMatch = await supabaseDb.findExactMagician(term);
+      if (magicianMatch) {
+        return await respondWithMagicianMatch(magicianMatch.bio, locale);
+      }
 
       const glossaryMatch =
         (await supabaseDb.findExactMagicTerm(term)) ?? (await supabaseDb.findSimilarMagicTerm(term));

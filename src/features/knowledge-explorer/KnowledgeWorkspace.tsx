@@ -197,6 +197,7 @@ function cleanTitle(value: string) {
 const KNOWLEDGE_SOURCE_LABEL: Record<KnowledgeSourceRef["source"], string> = {
   term: "术语库",
   trick: "技巧库",
+  person: "人物库",
 };
 
 // Trick hits and term-glossary hits are visually indistinguishable if just
@@ -292,27 +293,32 @@ async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
 
 /**
  * Raw dictionary lookup (no AI, no translation) used to ground the
- * "创建分支并放大" follow-up in the term-preview popover. A failed lookup
+ * "创建分支并放大" follow-up in the term-preview popover. Checks the
+ * magician biography dictionary and the term glossary (server picks
+ * whichever matches — see /api/explore's "termLookup" mode), so a clicked
+ * magician name grounds the same way a clicked term does. A failed lookup
  * should never block branch creation — it just means the follow-up proceeds
- * without forced glossary grounding, same as before this existed.
+ * without forced grounding, same as before this existed.
  */
-async function lookupMagicTermDefinition(
+async function lookupKnowledgeDictionaryMatch(
   term: string
-): Promise<{ term: string; definition: string } | null> {
+): Promise<{ term: string; definition: string; source: "term" | "person" } | null> {
   try {
-    const result = await apiJson<{ matched: boolean; term?: string; definition?: string }>(
-      "/api/explore",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "termLookup", term }),
-      }
-    );
+    const result = await apiJson<{
+      matched: boolean;
+      term?: string;
+      definition?: string;
+      source?: "term" | "person";
+    }>("/api/explore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "termLookup", term }),
+    });
     return result.matched && result.definition
-      ? { term: result.term || term, definition: result.definition }
+      ? { term: result.term || term, definition: result.definition, source: result.source ?? "term" }
       : null;
   } catch (error) {
-    console.warn("Magic term glossary lookup failed", error);
+    console.warn("Knowledge dictionary lookup failed", error);
     return null;
   }
 }
@@ -1936,16 +1942,21 @@ export function KnowledgeWorkspace() {
                   setSpawnError("");
                   const term = termPreview.term;
                   void (async () => {
-                    const glossary = await lookupMagicTermDefinition(term);
+                    const glossary = await lookupKnowledgeDictionaryMatch(term);
+                    const isPerson = glossary?.source === "person";
                     const value = glossary
                       ? locale === "zh"
-                        ? `请结合上游内容，深入解释“${term}”。\n\n术语库中该词条的权威定义如下，你的解释必须严格遵循这份定义，禁止编造、延伸或补充词典中没有的内容：\n${glossary.definition}`
-                        : `Using the upstream context, explain “${term}” in depth. The glossary's authoritative definition is below — your explanation must strictly follow it, with no invented or extended content beyond it:\n${glossary.definition}`
+                        ? isPerson
+                          ? `请结合上游内容，深入介绍“${term}”。\n\n人物库中该词条的传记原文如下，你的介绍必须严格依据这份传记，禁止编造、延伸或补充传记中没有的生平细节：\n${glossary.definition}`
+                          : `请结合上游内容，深入解释“${term}”。\n\n术语库中该词条的权威定义如下，你的解释必须严格遵循这份定义，禁止编造、延伸或补充词典中没有的内容：\n${glossary.definition}`
+                        : isPerson
+                          ? `Using the upstream context, introduce “${term}” in depth. The biography dictionary's authoritative entry is below — your introduction must strictly follow it, with no invented or extended biographical detail beyond it:\n${glossary.definition}`
+                          : `Using the upstream context, explain “${term}” in depth. The glossary's authoritative definition is below — your explanation must strictly follow it, with no invented or extended content beyond it:\n${glossary.definition}`
                       : locale === "zh"
                         ? `请结合上游内容，深入解释“${term}”。`
                         : `Using the upstream context, explain “${term}” in depth. Respond in English.`;
                     const presetKnowledgeSources: KnowledgeSourceRef[] | undefined = glossary
-                      ? [{ title: glossary.term, source: "term" }]
+                      ? [{ title: glossary.term, source: glossary.source }]
                       : undefined;
                     void createChildCard({
                       parentId: previewSourceCard.id,

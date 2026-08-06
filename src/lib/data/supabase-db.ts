@@ -23,6 +23,7 @@ import { embedText } from "@/lib/ai/embedding";
 import { embedTrickText } from "@/lib/ai/trick-embedding";
 import { embedTermTexts } from "@/lib/ai/term-embedding";
 import { buildTrickKeywordPlan, rankKeywordTricks } from "@/lib/ai/trick-keyword-search";
+import { nameVariants } from "@/lib/agent/magician-match";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 import { createServerClient } from "@supabase/ssr";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
@@ -77,6 +78,15 @@ type MagicTermScanRow = { term: string; definition: string };
 let magicTermsScanCache: { expiresAt: number; rows: MagicTermScanRow[] } | null = null;
 let magicTermsScanRefreshInFlight: Promise<MagicTermScanRow[]> | null = null;
 
+// Same rationale as the magic_terms scan cache above, but for the ~6000-row
+// magicians table (Who's Who in Magic) scanned per chat turn for name
+// mentions (see magician-match.ts). Even bigger than magic_terms, so the
+// paginated cold fetch is proportionally slower — worth its own cache.
+const MAGICIANS_SCAN_CACHE_TTL_MS = 10 * 60 * 1000;
+type MagicianScanRow = { name: string; bio: string };
+let magiciansScanCache: { expiresAt: number; rows: MagicianScanRow[] } | null = null;
+let magiciansScanRefreshInFlight: Promise<MagicianScanRow[]> | null = null;
+
 // This table is static public reference data, not user-scoped, so reading it
 // doesn't need the per-request cookie/session plumbing `sc()` provides — and
 // critically, unlike `sc()`, this client works outside of a request (e.g.
@@ -108,6 +118,25 @@ async function fetchAllMagicTermsForScan(): Promise<MagicTermScanRow[]> {
     if (error) throw new Error(`Failed to list magic terms: ${error.message}`);
     if (!data || data.length === 0) break;
     rows.push(...(data as MagicTermScanRow[]));
+    if (data.length < pageSize) break;
+    from += pageSize;
+  }
+  return rows;
+}
+
+async function fetchAllMagiciansForScan(): Promise<MagicianScanRow[]> {
+  const supabase = getPublicReferenceClient();
+  const rows: MagicianScanRow[] = [];
+  const pageSize = 1000;
+  let from = 0;
+  while (true) {
+    const { data, error } = await supabase
+      .from("magicians")
+      .select("name, bio")
+      .range(from, from + pageSize - 1);
+    if (error) throw new Error(`Failed to list magicians: ${error.message}`);
+    if (!data || data.length === 0) break;
+    rows.push(...(data as MagicianScanRow[]));
     if (data.length < pageSize) break;
     from += pageSize;
   }
@@ -1169,6 +1198,91 @@ export const supabaseDb = {
         });
     }
     return magicTermsScanRefreshInFlight;
+  },
+
+  // ── Magicians (Who's Who in Magic) ──────────────────────
+
+  /**
+   * Exact lookup for a magician by whatever surface form the caller has —
+   * the dictionary's own "Lastname, Firstname" headword, or the natural
+   * "Firstname Lastname" order that a click on AI-generated text will
+   * actually produce (the model writes "Harry Houdini", never "Houdini,
+   * Harry"). Matches against the same nameVariants() used by
+   * magician-match.ts's chat scan, via the same in-process cache
+   * (listMagiciansForScan) rather than a fresh DB round trip.
+   *
+   * Deliberately does NOT fall back to a bare last-name match: several
+   * different people can share a surname (e.g. "Blackstone, Harry" /
+   * "Blackstone Jr, Harry" / "Blackstone, Gay Blevins"), and confidently
+   * returning the wrong one's bio would be worse than falling through to the
+   * caller's AI-generation path for that ambiguous case.
+   */
+  async findExactMagician(name: string) {
+    // Trailing periods are cosmetic ("Sr." vs "Sr") -- strip before
+    // comparing so punctuation alone doesn't turn a real match into a miss.
+    const normalize = (value: string) => value.trim().replace(/\.+$/, "").toLowerCase();
+    const needleLower = normalize(name);
+    if (!needleLower) return null;
+
+    const rows = await this.listMagiciansForScan();
+    let match: MagicianScanRow | null = null;
+    let ambiguous = false;
+    for (const row of rows) {
+      const isMatch = nameVariants(row.name).some(
+        (variant) => normalize(variant) === needleLower
+      );
+      if (!isMatch) continue;
+      if (match && match.name !== row.name) {
+        ambiguous = true;
+        break;
+      }
+      match = row;
+    }
+    if (ambiguous || !match) return null;
+
+    return { name: match.name, bio: match.bio };
+  },
+
+  /**
+   * Full name+bio snapshot for scanning free-form chat text for magician
+   * mentions (see findMagicianMentions). Cached in-process with the same
+   * stale-while-revalidate semantics as listMagicTermsForScan — see that
+   * method's comment for the full rationale.
+   */
+  async listMagiciansForScan(): Promise<MagicianScanRow[]> {
+    if (magiciansScanCache) {
+      const isFresh = magiciansScanCache.expiresAt > Date.now();
+      if (!isFresh && !magiciansScanRefreshInFlight) {
+        magiciansScanRefreshInFlight = fetchAllMagiciansForScan()
+          .then((rows) => {
+            magiciansScanCache = { expiresAt: Date.now() + MAGICIANS_SCAN_CACHE_TTL_MS, rows };
+            return rows;
+          })
+          .catch((error) => {
+            console.warn("Background magicians cache refresh failed; keeping stale data", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+            magiciansScanCache = { ...magiciansScanCache!, expiresAt: Date.now() + 30_000 };
+            return magiciansScanCache.rows;
+          })
+          .finally(() => {
+            magiciansScanRefreshInFlight = null;
+          });
+      }
+      return magiciansScanCache.rows;
+    }
+
+    if (!magiciansScanRefreshInFlight) {
+      magiciansScanRefreshInFlight = fetchAllMagiciansForScan()
+        .then((rows) => {
+          magiciansScanCache = { expiresAt: Date.now() + MAGICIANS_SCAN_CACHE_TTL_MS, rows };
+          return rows;
+        })
+        .finally(() => {
+          magiciansScanRefreshInFlight = null;
+        });
+    }
+    return magiciansScanRefreshInFlight;
   },
 
   // ── Onboarding ──────────────────────────────────────────

@@ -199,10 +199,10 @@ export type SafetyResult = {
 };
 
 /** A matched knowledge-base entry, tagged by which table it came from so the
- * UI never conflates a trick hit with a glossary hit (or vice versa). */
+ * UI never conflates a trick hit with a glossary hit (or a magician bio hit). */
 export type KnowledgeSourceRef = {
   title: string;
-  source: "trick" | "term";
+  source: "trick" | "term" | "person";
 };
 
 export type AgentOutput = {

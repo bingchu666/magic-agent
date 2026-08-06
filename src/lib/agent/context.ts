@@ -6,6 +6,7 @@ import {
   retrieveOptionalKnowledge,
 } from "@/lib/agent/knowledge-retrieval";
 import { findMagicTermMentions } from "@/lib/agent/magic-term-match";
+import { findMagicianMentions } from "@/lib/agent/magician-match";
 
 const OPTIONAL_CONTEXT_TIMEOUT_MS = 800;
 // listMagicTermsForScan's cold path is a ~3.5s paginated fetch of the whole
@@ -14,6 +15,9 @@ const OPTIONAL_CONTEXT_TIMEOUT_MS = 800;
 // warmup (src/instrumentation.ts) plus the cache's stale-while-revalidate
 // refresh mean this timeout should only ever matter on a true cold start.
 const MAGIC_TERM_SCAN_TIMEOUT_MS = 5000;
+// Same rationale as MAGIC_TERM_SCAN_TIMEOUT_MS, but for the larger (~6000
+// row) magicians table — see listMagiciansForScan in supabase-db.ts.
+const MAGICIAN_SCAN_TIMEOUT_MS = 6000;
 const FILE_CONTEXT_CHARS = Number(
   process.env.MODEL_FILE_CONTEXT_CHARS || 700_000
 );
@@ -265,7 +269,7 @@ export async function buildContext(params: {
     )
   ).slice(0, 10);
 
-  const [storedMessages, explicitFiles, explicitInsights, retrievedTrickKnowledge, magicTermRecords] =
+  const [storedMessages, explicitFiles, explicitInsights, retrievedTrickKnowledge, magicTermRecords, magicianRecords] =
     await Promise.all([
       clientHistory.length > 0
         ? Promise.resolve([])
@@ -292,6 +296,12 @@ export async function buildContext(params: {
         supabaseDb.listMagicTermsForScan(),
         [],
         MAGIC_TERM_SCAN_TIMEOUT_MS
+      ),
+      loadOptionalContext(
+        "magician biography dictionary scan",
+        supabaseDb.listMagiciansForScan(),
+        [],
+        MAGICIAN_SCAN_TIMEOUT_MS
       ),
     ]);
   const messages = storedMessages.slice(-16);
@@ -484,13 +494,21 @@ export async function buildContext(params: {
     .map((match) => `${match.term}：\n${match.definition}`)
     .join("\n\n---\n\n");
 
-  const retrievedKnowledge = [termKnowledgeText, retrievedTrickKnowledge]
+  // Same idea as the term scan above, but for magician names (Who's Who in
+  // Magic) — see magician-match.ts.
+  const magicianMatches = findMagicianMentions(userMessage, magicianRecords);
+  const magicianKnowledgeText = magicianMatches
+    .map((match) => `${match.name}：\n${match.bio}`)
+    .join("\n\n---\n\n");
+
+  const retrievedKnowledge = [termKnowledgeText, magicianKnowledgeText, retrievedTrickKnowledge]
     .filter(Boolean)
     .join("\n\n---\n\n");
 
   const knowledgeSources = dedupeKnowledgeSources([
     ...presetKnowledgeSources,
     ...termMatches.map((match): KnowledgeSourceRef => ({ title: match.term, source: "term" })),
+    ...magicianMatches.map((match): KnowledgeSourceRef => ({ title: match.name, source: "person" })),
     ...extractKnowledgeSourceTitles(retrievedTrickKnowledge).map(
       (title): KnowledgeSourceRef => ({ title, source: "trick" })
     ),

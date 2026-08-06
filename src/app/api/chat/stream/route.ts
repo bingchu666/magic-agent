@@ -13,12 +13,14 @@ function sseLine<T extends SseEventType>(event: T, data: ChatSsePayloadMap[T]) {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
+const KNOWLEDGE_SOURCE_VALUES: KnowledgeSourceRef["source"][] = ["trick", "term", "person"];
+
 function isKnowledgeSourceRef(value: unknown): value is KnowledgeSourceRef {
   return (
     Boolean(value) &&
     typeof value === "object" &&
     typeof (value as KnowledgeSourceRef).title === "string" &&
-    ((value as KnowledgeSourceRef).source === "trick" || (value as KnowledgeSourceRef).source === "term")
+    KNOWLEDGE_SOURCE_VALUES.includes((value as KnowledgeSourceRef).source)
   );
 }
 

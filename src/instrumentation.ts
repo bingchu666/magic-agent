@@ -15,4 +15,12 @@ export async function register() {
       error: error instanceof Error ? error.message : String(error),
     });
   });
+
+  // Same warmup for the magicians (Who's Who in Magic) scan cache — see
+  // listMagiciansForScan in supabase-db.ts.
+  supabaseDb.listMagiciansForScan().catch((error) => {
+    console.warn("Failed to warm magicians cache at startup", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 }
