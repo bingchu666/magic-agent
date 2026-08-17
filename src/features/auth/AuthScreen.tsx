@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { PasswordInput } from "@/features/auth/PasswordInput";
+import { DEFAULT_PRODUCT_PATH } from "@/lib/routes";
 
 const LOCALE_STORAGE_KEY = "magic_locale_v1";
 
@@ -82,7 +83,7 @@ export function AuthScreen() {
         window.localStorage.setItem(LOCALE_STORAGE_KEY, locale);
       }
 
-      router.replace("/chat");
+      router.replace(DEFAULT_PRODUCT_PATH);
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
@@ -118,7 +119,7 @@ export function AuthScreen() {
 
       // Email confirmation is enabled — no session returned, user must verify first
       if (data.session) {
-        router.replace("/chat");
+        router.replace(DEFAULT_PRODUCT_PATH);
         router.refresh();
       } else {
         setMessage(

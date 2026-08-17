@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { DEFAULT_PRODUCT_PATH } from "@/lib/routes";
 
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
@@ -37,10 +38,10 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(url);
   }
 
-  // Logged in + on /auth or / → redirect to /chat
-  if (user && (pathname === "/auth" || pathname === "/")) {
+  // Logged in + on an entry or retired product route → open the primary workspace.
+  if (user && (pathname === "/auth" || pathname === "/" || pathname === "/chat")) {
     const url = request.nextUrl.clone();
-    url.pathname = "/chat";
+    url.pathname = DEFAULT_PRODUCT_PATH;
     return NextResponse.redirect(url);
   }
 
