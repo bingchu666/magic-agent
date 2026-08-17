@@ -7225,6 +7225,11 @@ a {
   background: rgba(248, 241, 226, 0.6);
 }
 
+/* Shown only in the compact child-card preview when it has no messages —
+   the primary card's empty state is replaced entirely by
+   .knowledge-stage-onboarding-heading below (grouped with the composer
+   itself, see hideEmptyHeading in KnowledgeCardConversation), so this stays
+   the original small centered placeholder. */
 .knowledge-stage-empty {
   display: grid;
   min-height: 55%;
@@ -7235,26 +7240,67 @@ a {
 }
 
 .knowledge-stage-empty h2 {
-  margin: 12px 0 4px;
-  color: var(--stage-ink);
-  font-size: 18px;
-}
-
-.knowledge-stage-empty p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin: 0;
-  font-size: 12px;
+  color: var(--stage-ink);
+  font-family: var(--magic-display);
+  font-size: 18px;
+  font-weight: 500;
 }
 
-/* The onboarding composer (see .knowledge-stage-onboarding below) is
-   centered over the same area this empty-state placeholder occupies.
-   Pull the placeholder up into the top of that area so the two don't
-   overlap, instead reading as one top-to-bottom group (heading, then
-   composer + quick prompts) — same idea as a landing-page hero. */
+.knowledge-stage-empty h2 svg {
+  color: var(--stage-child);
+}
+
+/* The onboarding heading — grouped with the composer inside
+   .knowledge-stage-onboarding via its flex `gap` (see below) rather than
+   independently positioned, so the spacing between heading and input box
+   stays correct at any viewport height instead of needing a hand-tuned
+   offset. */
+.knowledge-stage-onboarding-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  color: var(--stage-ink);
+  font-family: var(--magic-display);
+  font-size: 30px;
+  font-weight: 500;
+}
+
+.knowledge-stage-onboarding-heading svg {
+  color: var(--stage-child);
+}
+
+/* Strip the card's own chrome (border, glass background, header bar,
+   breadcrumb) while onboarding, so the composer reads as a full-bleed
+   landing area on a plain background instead of content boxed inside a
+   card widget — closer to a dedicated "new chat" screen. Restores itself
+   the moment the first message is sent, since is-onboarding drops off. */
 .knowledge-stage-main:has(.knowledge-stage-composer.is-onboarding)
-  .knowledge-stage-empty {
-  min-height: 0;
-  padding-top: clamp(32px, 8vh, 120px);
-  align-content: start;
+  .knowledge-stage-breadcrumb {
+  display: none;
+}
+
+.knowledge-stage-main:has(.knowledge-stage-composer.is-onboarding)
+  .knowledge-stage-card-header {
+  display: none;
+}
+
+.knowledge-stage-main:has(.knowledge-stage-composer.is-onboarding)
+  .knowledge-stage-card {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.knowledge-stage-main:has(.knowledge-stage-composer.is-onboarding)
+  .knowledge-stage-card::after {
+  display: none;
 }
 
 .knowledge-term-popover {
@@ -7530,24 +7576,28 @@ a {
 .knowledge-stage-onboarding {
   position: absolute;
   z-index: 24;
-  top: 56%;
+  top: 58%;
   right: 226px;
   left: 36px;
   display: flex;
-  width: min(1120px, calc(100% - 262px));
+  width: min(680px, calc(100% - 262px));
   margin: 0 auto;
   flex-direction: column;
   align-items: center;
-  gap: 14px;
+  gap: 18px;
   transform: translateY(-50%);
 }
 
 /* Inside .knowledge-stage-onboarding the composer flows in normal layout
-   instead of anchoring itself to the bottom of .knowledge-stage-main. */
+   instead of anchoring itself to the bottom of .knowledge-stage-main, and
+   gets a roomier, softer treatment than the compact bottom-pinned bar. */
 .knowledge-stage-composer.is-onboarding {
   position: static;
   width: 100%;
+  min-height: 64px;
   margin: 0;
+  padding: 8px 8px 8px 14px;
+  border-radius: 26px;
 }
 
 .knowledge-stage-quick-prompts {
@@ -7555,34 +7605,29 @@ a {
   flex-wrap: wrap;
   align-items: center;
   justify-content: center;
-  gap: 9px;
+  gap: 8px;
   width: 100%;
 }
 
 .knowledge-stage-quick-prompts button {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 9px 14px;
-  border: 1px solid rgba(255, 255, 255, 0.8);
+  gap: 6px;
+  padding: 8px 14px;
+  border: 1px solid rgba(24, 32, 27, 0.12);
   border-radius: 999px;
-  color: #506159;
-  background: rgba(255, 255, 255, 0.56);
-  box-shadow:
-    inset 0 1px 0 #ffffff,
-    0 8px 24px rgba(43, 65, 52, 0.08);
-  font-size: 12px;
-  font-weight: 620;
+  color: var(--stage-muted);
+  background: rgba(255, 255, 255, 0.5);
+  font-size: 12.5px;
+  font-weight: 560;
   cursor: pointer;
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
-  transition: 180ms ease;
+  transition: 160ms ease;
 }
 
 .knowledge-stage-quick-prompts button:hover {
   color: var(--stage-accent);
-  background: rgba(255, 255, 255, 0.9);
-  transform: translateY(-2px);
+  border-color: rgba(47, 111, 89, 0.35);
+  background: rgba(255, 255, 255, 0.85);
 }
 
 .knowledge-stage-composer-reference {

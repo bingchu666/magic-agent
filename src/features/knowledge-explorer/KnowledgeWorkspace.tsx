@@ -435,6 +435,7 @@ function KnowledgeCardConversation({
   bodyRef,
   locale,
   compact = false,
+  hideEmptyHeading = false,
 }: {
   card: KnowledgeCard;
   onTerm: (term: string) => void;
@@ -442,6 +443,12 @@ function KnowledgeCardConversation({
   bodyRef?: Ref<HTMLDivElement>;
   locale: Locale;
   compact?: boolean;
+  // The primary (non-compact) card passes this whenever the onboarding
+  // composer is showing for this same card — that block renders its own
+  // heading grouped with the input box, so this one steps aside instead of
+  // showing a second, disconnected copy further up the canvas. The compact
+  // child-card preview never onboards on its own, so it always keeps this.
+  hideEmptyHeading?: boolean;
 }) {
   const zh = locale === "zh";
   const captureSelection = (container: HTMLElement) => {
@@ -463,11 +470,12 @@ function KnowledgeCardConversation({
       className={`knowledge-stage-card-body ${compact ? "is-compact" : ""}`}
       ref={bodyRef}
     >
-      {card.messages.length === 0 ? (
+      {card.messages.length === 0 && !hideEmptyHeading ? (
         <div className="knowledge-stage-empty">
-          <Network size={28} />
-          <h2>{zh ? "准备建立这张知识卡片" : "Ready to build this knowledge card"}</h2>
-          <p>{zh ? "在下方输入问题，回答会在这里展开。" : "Ask below and the answer will unfold here."}</p>
+          <h2>
+            <Sparkles size={22} />
+            {zh ? "准备好了，问点什么？" : "Ready when you are"}
+          </h2>
         </div>
       ) : null}
 
@@ -2085,6 +2093,7 @@ export function KnowledgeWorkspace() {
                 }
                 bodyRef={parentCard ? undefined : cardBodyRef}
                 locale={locale}
+                hideEmptyHeading={showOnboarding}
               />
               {!parentCard && nextCard ? (
                 <button
@@ -2348,6 +2357,10 @@ export function KnowledgeWorkspace() {
 
         {showOnboarding ? (
           <div className="knowledge-stage-onboarding">
+            <h2 className="knowledge-stage-onboarding-heading">
+              <Sparkles size={22} />
+              {locale === "zh" ? "准备好了，问点什么？" : "Ready when you are"}
+            </h2>
             {composerForm}
             {quickPrompts}
           </div>
