@@ -15,9 +15,13 @@ const OPTIONAL_CONTEXT_TIMEOUT_MS = 800;
 // warmup (src/instrumentation.ts) plus the cache's stale-while-revalidate
 // refresh mean this timeout should only ever matter on a true cold start.
 const MAGIC_TERM_SCAN_TIMEOUT_MS = 5000;
-// Same rationale as MAGIC_TERM_SCAN_TIMEOUT_MS, but for the larger (~6000
-// row) magicians table — see listMagiciansForScan in supabase-db.ts.
-const MAGICIAN_SCAN_TIMEOUT_MS = 6000;
+// Same rationale as MAGIC_TERM_SCAN_TIMEOUT_MS, but for the larger (~6100
+// row, 7-page) magicians table — see listMagiciansForScan in supabase-db.ts.
+// Measured in production logs: a true cold start (first request racing the
+// startup warmup) timed out at 6s and was still running — 12s gives it
+// enough room to actually finish instead of silently serving zero magician
+// context on that first request.
+const MAGICIAN_SCAN_TIMEOUT_MS = 12000;
 const FILE_CONTEXT_CHARS = Number(
   process.env.MODEL_FILE_CONTEXT_CHARS || 700_000
 );
