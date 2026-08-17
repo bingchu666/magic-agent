@@ -161,6 +161,23 @@ CREATE TABLE trick_chunks (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE magic_terms (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  term TEXT NOT NULL UNIQUE,
+  definition TEXT NOT NULL DEFAULT '',
+  see_also TEXT,
+  source TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE magic_term_chunks (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  term_id UUID NOT NULL REFERENCES magic_terms(id) ON DELETE CASCADE,
+  content TEXT NOT NULL,
+  embedding vector(1024) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- 3. Indexes
 CREATE INDEX idx_threads_user_updated ON threads(user_id, updated_at DESC);
 CREATE INDEX idx_messages_thread_created ON messages(thread_id, created_at ASC);
@@ -169,6 +186,9 @@ CREATE INDEX idx_audit_logs_created ON audit_logs(created_at DESC);
 CREATE INDEX idx_events_created ON events(created_at DESC);
 CREATE INDEX idx_trick_chunks_trick ON trick_chunks(trick_id);
 CREATE INDEX idx_trick_chunks_embedding ON trick_chunks USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX idx_magic_terms_term ON magic_terms(term);
+CREATE INDEX idx_magic_term_chunks_term ON magic_term_chunks(term_id);
+CREATE INDEX idx_magic_term_chunks_embedding ON magic_term_chunks USING hnsw (embedding vector_cosine_ops);
 
 -- 4. Auto-create profile row when a new user signs up
 CREATE OR REPLACE FUNCTION public.handle_new_user()
@@ -244,6 +264,41 @@ $$;
 REVOKE ALL ON FUNCTION public.hybrid_search_trick_chunks(TEXT, vector, INTEGER) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.hybrid_search_trick_chunks(TEXT, vector, INTEGER) TO authenticated;
 
+-- Semantic fallback for magic term glossary lookups when an exact term-string
+-- match fails (e.g. a Chinese concept phrase vs. this English-only dictionary).
+CREATE OR REPLACE FUNCTION public.match_magic_term_chunks(
+  query_embedding vector(1024),
+  match_count INTEGER DEFAULT 5
+)
+RETURNS TABLE (
+  id UUID,
+  term_id UUID,
+  term TEXT,
+  definition TEXT,
+  content TEXT,
+  similarity DOUBLE PRECISION
+)
+LANGUAGE sql
+STABLE
+SECURITY INVOKER
+SET search_path = public, extensions
+AS $$
+  SELECT
+    chunk.id,
+    chunk.term_id,
+    term.term,
+    term.definition,
+    chunk.content,
+    (1 - (chunk.embedding <=> query_embedding))::DOUBLE PRECISION AS similarity
+  FROM public.magic_term_chunks AS chunk
+  JOIN public.magic_terms AS term ON term.id = chunk.term_id
+  ORDER BY similarity DESC
+  LIMIT LEAST(GREATEST(match_count, 1), 20);
+$$;
+
+REVOKE ALL ON FUNCTION public.match_magic_term_chunks(vector, INTEGER) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.match_magic_term_chunks(vector, INTEGER) TO authenticated;
+
 -- 5. Row-Level Security — enable on all tables
 ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE threads ENABLE ROW LEVEL SECURITY;
@@ -260,6 +315,8 @@ ALTER TABLE public.user_onboarding ENABLE ROW LEVEL SECURITY;
 ALTER TABLE thread_learning_state ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tricks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE trick_chunks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE magic_terms ENABLE ROW LEVEL SECURITY;
+ALTER TABLE magic_term_chunks ENABLE ROW LEVEL SECURITY;
 
 -- 6. RLS Policies
 
@@ -339,6 +396,8 @@ CREATE POLICY "Admins read all learning state" ON thread_learning_state FOR SELE
 -- The application reads the curated knowledge base; writes use the service role.
 CREATE POLICY "Authenticated users read tricks" ON tricks FOR SELECT USING (auth.uid() IS NOT NULL);
 CREATE POLICY "Authenticated users read trick chunks" ON trick_chunks FOR SELECT USING (auth.uid() IS NOT NULL);
+CREATE POLICY "Authenticated users read magic terms" ON magic_terms FOR SELECT USING (auth.uid() IS NOT NULL);
+CREATE POLICY "Authenticated users read magic term chunks" ON magic_term_chunks FOR SELECT USING (auth.uid() IS NOT NULL);
 
 -- Private file bucket. Object paths are uploads/{userId}/{generatedName}.
 INSERT INTO storage.buckets (id, name, public)

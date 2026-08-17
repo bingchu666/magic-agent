@@ -4,6 +4,7 @@ import {
   AlertCircle,
   ArrowRight,
   ArrowUpRight,
+  BookOpen,
   Bookmark,
   Check,
   ChevronLeft,
@@ -21,8 +22,12 @@ import {
   Plus,
   Send,
   Settings,
+  Sparkles,
   Square,
   Trash2,
+  type LucideIcon,
+  Users,
+  Wand2,
   X,
 } from "lucide-react";
 import Link from "next/link";
@@ -39,7 +44,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useSession } from "@/features/auth/session.client";
 import { consumeSseStream } from "@/features/chat-agent/sse";
-import { ChatHistoryMessage, FileAsset, Locale, Thread } from "@/lib/domain/types";
+import { ChatHistoryMessage, FileAsset, KnowledgeSourceRef, Locale, Thread } from "@/lib/domain/types";
 import { createId } from "@/lib/domain/utils";
 import { MiniTreeMap, type MiniTreeNode } from "@/lib/ui/MiniTreeMap";
 import {
@@ -62,7 +67,7 @@ type KnowledgeMessage = {
   quotedText?: string;
   attachments?: Array<Pick<FileAsset, "id" | "fileName" | "mimeType" | "size">>;
   groundingChecked?: boolean;
-  knowledgeSources?: string[];
+  knowledgeSources?: KnowledgeSourceRef[];
 };
 
 type KnowledgeCard = {
@@ -89,6 +94,7 @@ type SpawnDraft = {
   relation: Exclude<CardRelation, "root">;
   value: string;
   sourceTerm?: string;
+  presetKnowledgeSources?: KnowledgeSourceRef[];
 };
 
 type TermPreview = {
@@ -124,6 +130,9 @@ type FileProcessingDetail = {
 };
 
 const STORAGE_KEY = "magic_atlas_glass_stage_v2";
+// Keep in sync with the max-height on .knowledge-stage-composer textarea —
+// caps auto-grow at roughly 5-6 lines before the textarea scrolls internally.
+const COMPOSER_MAX_HEIGHT_PX = 140;
 const FILE_PROCESSING_TIMEOUT_MS = 180_000;
 const FILE_POLL_INTERVAL_MS = 800;
 
@@ -150,6 +159,57 @@ const relationMetaByLocale: Record<
     branch: { label: "Branch card · Continue context", prompt: "Carry context into a new direction" },
   },
 };
+
+// Preset starter questions shown once, in place of the normal bottom-pinned
+// composer, on a freshly created card that has no messages yet (see
+// `showOnboarding` in KnowledgeWorkspace). Clicking one sends `question`
+// straight to askCard — no typing required. Fixed set for now; not
+// context-driven.
+type QuickPrompt = {
+  id: string;
+  icon: LucideIcon;
+  label: Record<Locale, string>;
+  question: Record<Locale, string>;
+};
+
+const QUICK_PROMPTS: QuickPrompt[] = [
+  {
+    id: "trick",
+    icon: Wand2,
+    label: { zh: "教我一个基础技巧", en: "Teach me a basic trick" },
+    question: {
+      zh: "教我一个适合新手的基础魔术技巧，一步步讲清楚怎么练。",
+      en: "Teach me a beginner-friendly magic trick, step by step.",
+    },
+  },
+  {
+    id: "term",
+    icon: BookOpen,
+    label: { zh: "解释一个术语", en: "Explain a term" },
+    question: {
+      zh: "挑一个常见的魔术术语，解释它的含义和使用场景。",
+      en: "Pick a common magic term and explain what it means and when it's used.",
+    },
+  },
+  {
+    id: "person",
+    icon: Users,
+    label: { zh: "认识一位魔术师", en: "Meet a magician" },
+    question: {
+      zh: "介绍一位魔术史上有代表性的魔术师，他做了什么。",
+      en: "Introduce a notable magician from history and what they're known for.",
+    },
+  },
+  {
+    id: "practice",
+    icon: Sparkles,
+    label: { zh: "怎么开始练习", en: "How do I start practicing" },
+    question: {
+      zh: "我是魔术新手，应该怎么规划练习节奏？",
+      en: "I'm new to magic — how should I structure my practice?",
+    },
+  },
+];
 
 function createStarterCards(locale: Locale = "zh"): KnowledgeCard[] {
   const zh = locale === "zh";
@@ -188,6 +248,20 @@ function cleanTitle(value: string) {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 34);
+}
+
+const KNOWLEDGE_SOURCE_LABEL: Record<KnowledgeSourceRef["source"], string> = {
+  term: "术语库",
+  trick: "技巧库",
+  person: "人物库",
+};
+
+// Trick hits and term-glossary hits are visually indistinguishable if just
+// joined as plain titles — tag each with which table it actually came from.
+function formatKnowledgeSources(sources: KnowledgeSourceRef[]) {
+  return sources
+    .map((item) => `[${KNOWLEDGE_SOURCE_LABEL[item.source]}] ${item.title}`)
+    .join(" · ");
 }
 
 function formatFileSize(size: number) {
@@ -273,6 +347,38 @@ async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
   return data;
 }
 
+/**
+ * Raw dictionary lookup (no AI, no translation) used to ground the
+ * "创建分支并放大" follow-up in the term-preview popover. Checks the
+ * magician biography dictionary and the term glossary (server picks
+ * whichever matches — see /api/explore's "termLookup" mode), so a clicked
+ * magician name grounds the same way a clicked term does. A failed lookup
+ * should never block branch creation — it just means the follow-up proceeds
+ * without forced grounding, same as before this existed.
+ */
+async function lookupKnowledgeDictionaryMatch(
+  term: string
+): Promise<{ term: string; definition: string; source: "term" | "person" } | null> {
+  try {
+    const result = await apiJson<{
+      matched: boolean;
+      term?: string;
+      definition?: string;
+      source?: "term" | "person";
+    }>("/api/explore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "termLookup", term }),
+    });
+    return result.matched && result.definition
+      ? { term: result.term || term, definition: result.definition, source: result.source ?? "term" }
+      : null;
+  } catch (error) {
+    console.warn("Knowledge dictionary lookup failed", error);
+    return null;
+  }
+}
+
 function AnnotatedMarkdown({
   content,
   onTerm,
@@ -329,6 +435,7 @@ function KnowledgeCardConversation({
   bodyRef,
   locale,
   compact = false,
+  hideEmptyHeading = false,
 }: {
   card: KnowledgeCard;
   onTerm: (term: string) => void;
@@ -336,6 +443,12 @@ function KnowledgeCardConversation({
   bodyRef?: Ref<HTMLDivElement>;
   locale: Locale;
   compact?: boolean;
+  // The primary (non-compact) card passes this whenever the onboarding
+  // composer is showing for this same card — that block renders its own
+  // heading grouped with the input box, so this one steps aside instead of
+  // showing a second, disconnected copy further up the canvas. The compact
+  // child-card preview never onboards on its own, so it always keeps this.
+  hideEmptyHeading?: boolean;
 }) {
   const zh = locale === "zh";
   const captureSelection = (container: HTMLElement) => {
@@ -357,11 +470,12 @@ function KnowledgeCardConversation({
       className={`knowledge-stage-card-body ${compact ? "is-compact" : ""}`}
       ref={bodyRef}
     >
-      {card.messages.length === 0 ? (
+      {card.messages.length === 0 && !hideEmptyHeading ? (
         <div className="knowledge-stage-empty">
-          <Network size={28} />
-          <h2>{zh ? "准备建立这张知识卡片" : "Ready to build this knowledge card"}</h2>
-          <p>{zh ? "在下方输入问题，回答会在这里展开。" : "Ask below and the answer will unfold here."}</p>
+          <h2>
+            <Sparkles size={22} />
+            {zh ? "准备好了，问点什么？" : "Ready when you are"}
+          </h2>
         </div>
       ) : null}
 
@@ -420,8 +534,8 @@ function KnowledgeCardConversation({
                 <div className="knowledge-stage-grounding is-hit">
                   <Check size={14} />
                   <div>
-                  <strong>{zh ? "已引用数据库" : "Knowledge base cited"}</strong>
-                    <span>{message.knowledgeSources.join(" · ")}</span>
+                    <strong>{zh ? "已引用数据库" : "Knowledge base cited"}</strong>
+                    <span>{formatKnowledgeSources(message.knowledgeSources)}</span>
                   </div>
                 </div>
               ) : (
@@ -477,7 +591,6 @@ export function KnowledgeWorkspace() {
   const cardBodyRef = useRef<HTMLDivElement | null>(null);
   const stackRef = useRef<HTMLDivElement | null>(null);
   const childCardRef = useRef<HTMLDivElement | null>(null);
-  const composerInputRef = useRef<HTMLInputElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const uploadMenuRef = useRef<HTMLDivElement | null>(null);
   const selectionActionRef = useRef<HTMLDivElement | null>(null);
@@ -674,6 +787,11 @@ export function KnowledgeWorkspace() {
   }, [hydrated, sidebarOpen]);
 
   const activeCard = cards.find((card) => card.id === activeCardId) ?? cards[0];
+  // A freshly spawned child/related/branch card starts with zero messages
+  // (the very first starter card always ships with one, so this never fires
+  // for it). While true, the composer relocates to a centered "onboarding"
+  // layout with quick-start prompts instead of its usual bottom-pinned spot.
+  const showOnboarding = Boolean(activeCard && activeCard.messages.length === 0);
   const parentCard =
     activeCard?.parentId
       ? cards.find((card) => card.id === activeCard.parentId)
@@ -707,6 +825,7 @@ export function KnowledgeWorkspace() {
     !parentCard && stageBaseCard && expandedCardId === stageBaseCard.id
   );
   const inputValue = activeCard ? cardInputs[activeCard.id] ?? "" : "";
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const activeAttachmentIds = activeCard ? cardAttachmentIds[activeCard.id] ?? [] : [];
   const activeAttachments = activeAttachmentIds
     .map((fileId) => files.find((file) => file.id === fileId))
@@ -723,6 +842,17 @@ export function KnowledgeWorkspace() {
     // reopening it (or switching to a different card) restores the default position.
     setChildCardDragPosition(null);
   }, [activeCard?.id]);
+
+  useEffect(() => {
+    // Auto-grow the composer with content, up to COMPOSER_MAX_HEIGHT_PX
+    // (~5-6 lines — see the matching max-height in .knowledge-stage-composer
+    // textarea), then let the textarea's own scrollbar take over. Re-measure
+    // whenever the visible text changes, including on card switches.
+    const el = composerTextareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_HEIGHT_PX)}px`;
+  }, [inputValue]);
 
   const handleChildCardDragStart = (event: React.PointerEvent<HTMLElement>) => {
     if (childExpanded) return;
@@ -860,7 +990,7 @@ export function KnowledgeWorkspace() {
     }));
     setSelectionAction(null);
     clearBrowserSelection();
-    window.requestAnimationFrame(() => composerInputRef.current?.focus());
+    window.requestAnimationFrame(() => composerTextareaRef.current?.focus());
   };
 
   const createCardFromSelection = (selection: SelectionAction) => {
@@ -1053,7 +1183,11 @@ export function KnowledgeWorkspace() {
     }
   };
 
-  const askCard = async (cardId: string, question: string) => {
+  const askCard = async (
+    cardId: string,
+    question: string,
+    presetKnowledgeSources?: KnowledgeSourceRef[]
+  ) => {
     const quotedText = cardSelectionContexts[cardId]?.trim() || "";
     const attachmentIdsForMessage = cardAttachmentIds[cardId] ?? [];
     const hasPendingFile = pendingUploads.some(
@@ -1167,6 +1301,7 @@ export function KnowledgeWorkspace() {
           attachmentIds: attachmentIdsForMessage,
           clientHistory: history,
           responseMode: "annotated",
+          presetKnowledgeSources,
         }),
       });
       if (!response.ok) {
@@ -1348,7 +1483,7 @@ export function KnowledgeWorkspace() {
     setTermPreview(null);
     setSpawnDraft(null);
     setSpawnError("");
-    window.requestAnimationFrame(() => composerInputRef.current?.focus());
+    window.requestAnimationFrame(() => composerTextareaRef.current?.focus());
   };
 
   // Shared by both the two-step branch modal (spawnCard, below — used when
@@ -1396,7 +1531,7 @@ export function KnowledgeWorkspace() {
       // explicit, opt-in click on the size-toggle button.
       setExpandedCardId(null);
       setActiveCardId(child.id);
-      void askCard(child.id, question);
+      void askCard(child.id, question, draft.presetKnowledgeSources);
     } catch (error) {
       setSpawnError(
         error instanceof Error
@@ -1494,6 +1629,273 @@ export function KnowledgeWorkspace() {
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1400);
   };
+
+  // Defined once and reused in two spots: its usual bottom-pinned position,
+  // or wrapped inside the centered onboarding block (see `showOnboarding`).
+  // `is-onboarding` switches its CSS from `position: absolute` (anchored to
+  // the bottom of .knowledge-stage-main) to `position: static` so it can
+  // flow inside that wrapper instead.
+  const composerForm = activeCard ? (
+    <form
+      className={`knowledge-stage-composer ${showOnboarding ? "is-onboarding" : ""} ${
+        activeAttachments.length > 0 || activePendingUploads.length > 0
+          ? "has-files"
+          : ""
+      } ${activeSelectionContext ? "has-reference" : ""} ${
+        composerDragActive ? "is-dragging" : ""
+      }`}
+      onSubmit={(event) => {
+        event.preventDefault();
+        const current = cardsRef.current.find((item) => item.id === activeCard.id);
+        if (current?.status === "streaming") return;
+        void askCard(activeCard.id, inputValue);
+      }}
+      onDragEnter={(event) => {
+        event.preventDefault();
+        if (!uploadingFiles && activeCard.status !== "streaming") {
+          setComposerDragActive(true);
+        }
+      }}
+      onDragOver={(event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+      }}
+      onDragLeave={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node)) return;
+        setComposerDragActive(false);
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        setComposerDragActive(false);
+        void uploadFilesForCard(activeCard.id, event.dataTransfer.files);
+      }}
+    >
+      {activeSelectionContext ? (
+        <div className="knowledge-stage-composer-reference">
+          <ArrowRight size={16} />
+          <span>“{activeSelectionContext}”</span>
+          <button
+            type="button"
+            onClick={() =>
+              setCardSelectionContexts((previous) => ({
+                ...previous,
+                [activeCard.id]: "",
+              }))
+            }
+            aria-label={locale === "zh" ? "移除引用内容" : "Remove quoted passage"}
+          >
+            <X size={15} />
+          </button>
+        </div>
+      ) : null}
+      {activeAttachments.length > 0 || activePendingUploads.length > 0 ? (
+        <div className="knowledge-stage-composer-files" aria-live="polite">
+          {activeAttachments.map((file) => (
+            <div key={file.id} className="is-ready">
+              <span>
+                <FileUp size={16} />
+              </span>
+              <div>
+                <strong>{file.fileName}</strong>
+                <small>
+                  <Check size={10} />
+                  {locale === "zh" ? "已附加" : "Attached"} · {formatFileSize(file.size)}
+                </small>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  setCardAttachmentIds((previous) => ({
+                    ...previous,
+                    [activeCard.id]: (previous[activeCard.id] ?? []).filter(
+                      (fileId) => fileId !== file.id
+                    ),
+                  }))
+                }
+                aria-label={
+                  locale === "zh"
+                    ? `移除 ${file.fileName}`
+                    : `Remove ${file.fileName}`
+                }
+              >
+                <X size={12} />
+              </button>
+            </div>
+          ))}
+          {activePendingUploads.map((file) => (
+            <div key={file.localId} className={file.stage === "failed" ? "is-failed" : ""}>
+              <span>
+                {file.stage === "failed" ? (
+                  <AlertCircle size={16} />
+                ) : (
+                  <Loader2 className="animate-spin" size={16} />
+                )}
+              </span>
+              <div>
+                <strong>{file.fileName}</strong>
+                <small>
+                  {file.stage === "queued"
+                    ? locale === "zh" ? "等待上传" : "Waiting"
+                    : file.stage === "uploading"
+                      ? locale === "zh" ? "正在上传…" : "Uploading…"
+                      : file.stage === "processing"
+                        ? locale === "zh" ? "正在解析…" : "Processing…"
+                        : file.error || (locale === "zh" ? "上传失败" : "Upload failed")}
+                </small>
+              </div>
+              {file.stage === "failed" ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPendingUploads((previous) =>
+                      previous.filter((item) => item.localId !== file.localId)
+                    )
+                  }
+                  aria-label={
+                    locale === "zh"
+                      ? `移除 ${file.fileName}`
+                      : `Remove ${file.fileName}`
+                  }
+                >
+                  <X size={12} />
+                </button>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="knowledge-stage-upload-wrap" ref={uploadMenuRef}>
+        <button
+          type="button"
+          className={uploadMenuOpen ? "is-open" : ""}
+          onClick={() => setUploadMenuOpen((open) => !open)}
+          disabled={uploadingFiles || activeCard.status === "streaming"}
+          aria-label={locale === "zh" ? "添加照片和文件" : "Add photos and files"}
+          aria-expanded={uploadMenuOpen}
+          aria-haspopup="menu"
+        >
+          {uploadingFiles ? <Loader2 className="animate-spin" size={18} /> : <Plus size={21} />}
+        </button>
+        {uploadMenuOpen ? (
+          <div className="knowledge-stage-upload-menu" role="menu">
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => uploadInputRef.current?.click()}
+            >
+              <span>
+                <Paperclip size={18} />
+              </span>
+              <div>
+                <strong>{locale === "zh" ? "上传照片和文件" : "Upload photos and files"}</strong>
+                <small>{locale === "zh" ? "从电脑选择，单个文件最大 25 MB" : "Choose from your computer, up to 25 MB each"}</small>
+              </div>
+            </button>
+            <p>
+              <FileUp size={13} />
+              {locale === "zh" ? "也可以把文件直接拖到输入框" : "You can also drag files into the composer"}
+            </p>
+          </div>
+        ) : null}
+        <input
+          ref={uploadInputRef}
+          type="file"
+          multiple
+          className="knowledge-stage-upload-input"
+          onChange={(event) => {
+            void uploadFilesForCard(activeCard.id, event.target.files);
+            event.currentTarget.value = "";
+          }}
+        />
+      </div>
+      <span className="knowledge-stage-model">AI</span>
+      <textarea
+        ref={composerTextareaRef}
+        value={inputValue}
+        onChange={(event) =>
+          setCardInputs((previous) => ({
+            ...previous,
+            [activeCard.id]: event.target.value,
+          }))
+        }
+        onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing) return;
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            event.currentTarget.form?.requestSubmit();
+          }
+        }}
+        placeholder={
+          activeSelectionContext
+            ? locale === "zh"
+              ? "针对引用内容提问…"
+              : "Ask about the quoted passage…"
+            : locale === "zh"
+              ? "在当前卡片继续提问…"
+              : "Continue asking on this card…"
+        }
+        rows={1}
+        disabled={activeCard.status === "streaming"}
+      />
+      {activeCard.status === "streaming" ? (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            stopCardGeneration(activeCard.id);
+          }}
+          aria-label={locale === "zh" ? "停止生成" : "Stop generating"}
+          title={locale === "zh" ? "停止生成" : "Stop generating"}
+        >
+          <Square size={16} fill="currentColor" strokeWidth={0} />
+        </button>
+      ) : (
+        <button
+          type="submit"
+          disabled={
+            (!inputValue.trim() && activeAttachments.length === 0) ||
+            uploadingFiles ||
+            activePendingUploads.some((file) => file.stage !== "failed")
+          }
+          aria-label={locale === "zh" ? "发送" : "Send"}
+        >
+          <Send size={18} />
+        </button>
+      )}
+      {composerDragActive ? (
+        <div className="knowledge-stage-composer-drop">
+          <FileUp size={20} />
+          <strong>{locale === "zh" ? "松开以上传文件" : "Drop files to upload"}</strong>
+        </div>
+      ) : null}
+    </form>
+  ) : null;
+
+  // Onboarding-only: fixed set of starter questions, sent straight to
+  // askCard on click (bypasses the textarea entirely).
+  const quickPrompts = activeCard ? (
+    <div
+      className="knowledge-stage-quick-prompts"
+      role="group"
+      aria-label={locale === "zh" ? "快捷问题" : "Quick-start questions"}
+    >
+      {QUICK_PROMPTS.map((prompt) => {
+        const Icon = prompt.icon;
+        return (
+          <button
+            key={prompt.id}
+            type="button"
+            onClick={() => void askCard(activeCard.id, prompt.question[locale])}
+          >
+            <Icon size={15} />
+            <span>{prompt.label[locale]}</span>
+          </button>
+        );
+      })}
+    </div>
+  ) : null;
 
   return (
     <div className={`knowledge-stage ${sidebarOpen ? "is-sidebar-open" : ""}`}>
@@ -1691,6 +2093,7 @@ export function KnowledgeWorkspace() {
                 }
                 bodyRef={parentCard ? undefined : cardBodyRef}
                 locale={locale}
+                hideEmptyHeading={showOnboarding}
               />
               {!parentCard && nextCard ? (
                 <button
@@ -1874,15 +2277,32 @@ export function KnowledgeWorkspace() {
                 disabled={termPreview.loading || creatingCard}
                 onClick={() => {
                   setSpawnError("");
-                  void createChildCard({
-                    parentId: previewSourceCard.id,
-                    relation: "child",
-                    sourceTerm: termPreview.term,
-                    value:
-                      locale === "zh"
-                        ? `请结合上游内容，深入解释“${termPreview.term}”。`
-                        : `Using the upstream context, explain “${termPreview.term}” in depth. Respond in English.`,
-                  });
+                  const term = termPreview.term;
+                  void (async () => {
+                    const glossary = await lookupKnowledgeDictionaryMatch(term);
+                    const isPerson = glossary?.source === "person";
+                    const value = glossary
+                      ? locale === "zh"
+                        ? isPerson
+                          ? `请结合上游内容，深入介绍“${term}”。\n\n人物库中该词条的传记原文如下，你的介绍必须严格依据这份传记，禁止编造、延伸或补充传记中没有的生平细节：\n${glossary.definition}`
+                          : `请结合上游内容，深入解释“${term}”。\n\n术语库中该词条的权威定义如下，你的解释必须严格遵循这份定义，禁止编造、延伸或补充词典中没有的内容：\n${glossary.definition}`
+                        : isPerson
+                          ? `Using the upstream context, introduce “${term}” in depth. The biography dictionary's authoritative entry is below — your introduction must strictly follow it, with no invented or extended biographical detail beyond it:\n${glossary.definition}`
+                          : `Using the upstream context, explain “${term}” in depth. The glossary's authoritative definition is below — your explanation must strictly follow it, with no invented or extended content beyond it:\n${glossary.definition}`
+                      : locale === "zh"
+                        ? `请结合上游内容，深入解释“${term}”。`
+                        : `Using the upstream context, explain “${term}” in depth. Respond in English.`;
+                    const presetKnowledgeSources: KnowledgeSourceRef[] | undefined = glossary
+                      ? [{ title: glossary.term, source: glossary.source }]
+                      : undefined;
+                    void createChildCard({
+                      parentId: previewSourceCard.id,
+                      relation: "child",
+                      sourceTerm: term,
+                      value,
+                      presetKnowledgeSources,
+                    });
+                  })();
                 }}
               >
                 {creatingCard ? (
@@ -1912,7 +2332,7 @@ export function KnowledgeWorkspace() {
           <p>{locale === "zh" ? "节点由卡片关系自动生成" : "Nodes are generated from card relationships"}</p>
         </aside>
 
-        {activeCard ? (
+        {activeCard && !showOnboarding ? (
           <div className="knowledge-stage-branch-actions">
             {(["child", "related", "branch"] as const).map((relation) => (
               <button
@@ -1935,235 +2355,18 @@ export function KnowledgeWorkspace() {
           </div>
         ) : null}
 
-        {activeCard ? (
-          <form
-            className={`knowledge-stage-composer ${
-              activeAttachments.length > 0 || activePendingUploads.length > 0
-                ? "has-files"
-                : ""
-            } ${activeSelectionContext ? "has-reference" : ""} ${
-              composerDragActive ? "is-dragging" : ""
-            }`}
-            onSubmit={(event) => {
-              event.preventDefault();
-              const current = cardsRef.current.find((item) => item.id === activeCard.id);
-              if (current?.status === "streaming") return;
-              void askCard(activeCard.id, inputValue);
-            }}
-            onDragEnter={(event) => {
-              event.preventDefault();
-              if (!uploadingFiles && activeCard.status !== "streaming") {
-                setComposerDragActive(true);
-              }
-            }}
-            onDragOver={(event) => {
-              event.preventDefault();
-              event.dataTransfer.dropEffect = "copy";
-            }}
-            onDragLeave={(event) => {
-              if (event.currentTarget.contains(event.relatedTarget as Node)) return;
-              setComposerDragActive(false);
-            }}
-            onDrop={(event) => {
-              event.preventDefault();
-              setComposerDragActive(false);
-              void uploadFilesForCard(activeCard.id, event.dataTransfer.files);
-            }}
-          >
-            {activeSelectionContext ? (
-              <div className="knowledge-stage-composer-reference">
-                <ArrowRight size={16} />
-                <span>“{activeSelectionContext}”</span>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setCardSelectionContexts((previous) => ({
-                      ...previous,
-                      [activeCard.id]: "",
-                    }))
-                  }
-                  aria-label={locale === "zh" ? "移除引用内容" : "Remove quoted passage"}
-                >
-                  <X size={15} />
-                </button>
-              </div>
-            ) : null}
-            {activeAttachments.length > 0 || activePendingUploads.length > 0 ? (
-              <div className="knowledge-stage-composer-files" aria-live="polite">
-                {activeAttachments.map((file) => (
-                  <div key={file.id} className="is-ready">
-                    <span>
-                      <FileUp size={16} />
-                    </span>
-                    <div>
-                      <strong>{file.fileName}</strong>
-                      <small>
-                        <Check size={10} />
-                        {locale === "zh" ? "已附加" : "Attached"} · {formatFileSize(file.size)}
-                      </small>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setCardAttachmentIds((previous) => ({
-                          ...previous,
-                          [activeCard.id]: (previous[activeCard.id] ?? []).filter(
-                            (fileId) => fileId !== file.id
-                          ),
-                        }))
-                      }
-                      aria-label={
-                        locale === "zh"
-                          ? `移除 ${file.fileName}`
-                          : `Remove ${file.fileName}`
-                      }
-                    >
-                      <X size={12} />
-                    </button>
-                  </div>
-                ))}
-                {activePendingUploads.map((file) => (
-                  <div key={file.localId} className={file.stage === "failed" ? "is-failed" : ""}>
-                    <span>
-                      {file.stage === "failed" ? (
-                        <AlertCircle size={16} />
-                      ) : (
-                        <Loader2 className="animate-spin" size={16} />
-                      )}
-                    </span>
-                    <div>
-                      <strong>{file.fileName}</strong>
-                      <small>
-                        {file.stage === "queued"
-                          ? locale === "zh" ? "等待上传" : "Waiting"
-                          : file.stage === "uploading"
-                            ? locale === "zh" ? "正在上传…" : "Uploading…"
-                            : file.stage === "processing"
-                              ? locale === "zh" ? "正在解析…" : "Processing…"
-                              : file.error || (locale === "zh" ? "上传失败" : "Upload failed")}
-                      </small>
-                    </div>
-                    {file.stage === "failed" ? (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setPendingUploads((previous) =>
-                            previous.filter((item) => item.localId !== file.localId)
-                          )
-                        }
-                        aria-label={
-                          locale === "zh"
-                            ? `移除 ${file.fileName}`
-                            : `Remove ${file.fileName}`
-                        }
-                      >
-                        <X size={12} />
-                      </button>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
-            ) : null}
-
-            <div className="knowledge-stage-upload-wrap" ref={uploadMenuRef}>
-              <button
-                type="button"
-                className={uploadMenuOpen ? "is-open" : ""}
-                onClick={() => setUploadMenuOpen((open) => !open)}
-                disabled={uploadingFiles || activeCard.status === "streaming"}
-                aria-label={locale === "zh" ? "添加照片和文件" : "Add photos and files"}
-                aria-expanded={uploadMenuOpen}
-                aria-haspopup="menu"
-              >
-                {uploadingFiles ? <Loader2 className="animate-spin" size={18} /> : <Plus size={21} />}
-              </button>
-              {uploadMenuOpen ? (
-                <div className="knowledge-stage-upload-menu" role="menu">
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => uploadInputRef.current?.click()}
-                  >
-                    <span>
-                      <Paperclip size={18} />
-                    </span>
-                    <div>
-                      <strong>{locale === "zh" ? "上传照片和文件" : "Upload photos and files"}</strong>
-                      <small>{locale === "zh" ? "从电脑选择，单个文件最大 25 MB" : "Choose from your computer, up to 25 MB each"}</small>
-                    </div>
-                  </button>
-                  <p>
-                    <FileUp size={13} />
-                    {locale === "zh" ? "也可以把文件直接拖到输入框" : "You can also drag files into the composer"}
-                  </p>
-                </div>
-              ) : null}
-              <input
-                ref={uploadInputRef}
-                type="file"
-                multiple
-                className="knowledge-stage-upload-input"
-                onChange={(event) => {
-                  void uploadFilesForCard(activeCard.id, event.target.files);
-                  event.currentTarget.value = "";
-                }}
-              />
-            </div>
-            <span className="knowledge-stage-model">AI</span>
-            <input
-              ref={composerInputRef}
-              value={inputValue}
-              onChange={(event) =>
-                setCardInputs((previous) => ({
-                  ...previous,
-                  [activeCard.id]: event.target.value,
-                }))
-              }
-              placeholder={
-                activeSelectionContext
-                  ? locale === "zh"
-                    ? "针对引用内容提问…"
-                    : "Ask about the quoted passage…"
-                  : locale === "zh"
-                    ? "在当前卡片继续提问…"
-                    : "Continue asking on this card…"
-              }
-              disabled={activeCard.status === "streaming"}
-            />
-            {activeCard.status === "streaming" ? (
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  stopCardGeneration(activeCard.id);
-                }}
-                aria-label={locale === "zh" ? "停止生成" : "Stop generating"}
-                title={locale === "zh" ? "停止生成" : "Stop generating"}
-              >
-                <Square size={16} fill="currentColor" strokeWidth={0} />
-              </button>
-            ) : (
-              <button
-                type="submit"
-                disabled={
-                  (!inputValue.trim() && activeAttachments.length === 0) ||
-                  uploadingFiles ||
-                  activePendingUploads.some((file) => file.stage !== "failed")
-                }
-                aria-label={locale === "zh" ? "发送" : "Send"}
-              >
-                <Send size={18} />
-              </button>
-            )}
-            {composerDragActive ? (
-              <div className="knowledge-stage-composer-drop">
-                <FileUp size={20} />
-                <strong>{locale === "zh" ? "松开以上传文件" : "Drop files to upload"}</strong>
-              </div>
-            ) : null}
-          </form>
-        ) : null}
+        {showOnboarding ? (
+          <div className="knowledge-stage-onboarding">
+            <h2 className="knowledge-stage-onboarding-heading">
+              <Sparkles size={22} />
+              {locale === "zh" ? "准备好了，问点什么？" : "Ready when you are"}
+            </h2>
+            {composerForm}
+            {quickPrompts}
+          </div>
+        ) : (
+          composerForm
+        )}
 
         {selectionAction ? (
           <div

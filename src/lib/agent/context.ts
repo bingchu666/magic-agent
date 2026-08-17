@@ -1,12 +1,27 @@
-import { ChatHistoryMessage, FileInsight, Locale } from "@/lib/domain/types";
+import { ChatHistoryMessage, FileInsight, KnowledgeSourceRef, Locale } from "@/lib/domain/types";
 import { supabaseDb } from "@/lib/data/supabase-db";
 import { stripMarkdown } from "@/lib/domain/utils";
 import {
   extractKnowledgeSourceTitles,
   retrieveOptionalKnowledge,
 } from "@/lib/agent/knowledge-retrieval";
+import { findMagicTermMentions } from "@/lib/agent/magic-term-match";
+import { findMagicianMentions } from "@/lib/agent/magician-match";
 
 const OPTIONAL_CONTEXT_TIMEOUT_MS = 800;
+// listMagicTermsForScan's cold path is a ~3.5s paginated fetch of the whole
+// magic_terms table (see supabase-db.ts) — well past the 800ms budget used
+// for other optional context, so it gets its own longer allowance. Startup
+// warmup (src/instrumentation.ts) plus the cache's stale-while-revalidate
+// refresh mean this timeout should only ever matter on a true cold start.
+const MAGIC_TERM_SCAN_TIMEOUT_MS = 5000;
+// Same rationale as MAGIC_TERM_SCAN_TIMEOUT_MS, but for the larger (~6100
+// row, 7-page) magicians table — see listMagiciansForScan in supabase-db.ts.
+// Measured in production logs: a true cold start (first request racing the
+// startup warmup) timed out at 6s and was still running — 12s gives it
+// enough room to actually finish instead of silently serving zero magician
+// context on that first request.
+const MAGICIAN_SCAN_TIMEOUT_MS = 12000;
 const FILE_CONTEXT_CHARS = Number(
   process.env.MODEL_FILE_CONTEXT_CHARS || 700_000
 );
@@ -200,17 +215,15 @@ export function rankFileChunks(insights: FileInsight[], query: string) {
 async function loadOptionalContext<T>(
   label: string,
   operation: Promise<T>,
-  fallback: T
+  fallback: T,
+  timeoutMs: number = OPTIONAL_CONTEXT_TIMEOUT_MS
 ): Promise<T> {
   let timeout: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([
       operation,
       new Promise<T>((_, reject) => {
-        timeout = setTimeout(
-          () => reject(new Error(`${label} timed out`)),
-          OPTIONAL_CONTEXT_TIMEOUT_MS
-        );
+        timeout = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
       }),
     ]);
   } catch (error) {
@@ -223,6 +236,16 @@ async function loadOptionalContext<T>(
   }
 }
 
+function dedupeKnowledgeSources(sources: KnowledgeSourceRef[]): KnowledgeSourceRef[] {
+  const seen = new Set<string>();
+  return sources.filter(({ source, title }) => {
+    const key = `${source}:${title}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export async function buildContext(params: {
   threadId: string;
   userId: string;
@@ -230,6 +253,7 @@ export async function buildContext(params: {
   userMessage: string;
   attachmentIds?: string[];
   clientHistory?: ChatHistoryMessage[];
+  presetKnowledgeSources?: KnowledgeSourceRef[];
 }) {
   const {
     threadId,
@@ -237,7 +261,9 @@ export async function buildContext(params: {
     userMessage,
     attachmentIds = [],
     clientHistory = [],
+    presetKnowledgeSources = [],
   } = params;
+
   const requestedAttachmentIds = Array.from(
     new Set(
       attachmentIds.filter(
@@ -246,7 +272,8 @@ export async function buildContext(params: {
       )
     )
   ).slice(0, 10);
-  const [storedMessages, explicitFiles, explicitInsights, retrievedKnowledge] =
+
+  const [storedMessages, explicitFiles, explicitInsights, retrievedTrickKnowledge, magicTermRecords, magicianRecords] =
     await Promise.all([
       clientHistory.length > 0
         ? Promise.resolve([])
@@ -268,6 +295,18 @@ export async function buildContext(params: {
             query: userMessage,
             search: (query) => supabaseDb.searchTrickChunks(query),
           }),
+      loadOptionalContext(
+        "magic term dictionary scan",
+        supabaseDb.listMagicTermsForScan(),
+        [],
+        MAGIC_TERM_SCAN_TIMEOUT_MS
+      ),
+      loadOptionalContext(
+        "magician biography dictionary scan",
+        supabaseDb.listMagiciansForScan(),
+        [],
+        MAGICIAN_SCAN_TIMEOUT_MS
+      ),
     ]);
   const messages = storedMessages.slice(-16);
 
@@ -450,11 +489,40 @@ export async function buildContext(params: {
     .join("\n\n")
     .slice(0, FILE_CONTEXT_CHARS);
 
+  // Whole-message dictionary scan — distinct from the trick-chunk retrieval
+  // above, which searches by relevance/embedding against a curated trick
+  // library. This is plain "does any headword appear in this text" matching
+  // (see magic-term-match.ts for why semantic search doesn't fit here).
+  const termMatches = findMagicTermMentions(userMessage, magicTermRecords);
+  const termKnowledgeText = termMatches
+    .map((match) => `${match.term}：\n${match.definition}`)
+    .join("\n\n---\n\n");
+
+  // Same idea as the term scan above, but for magician names (Who's Who in
+  // Magic) — see magician-match.ts.
+  const magicianMatches = findMagicianMentions(userMessage, magicianRecords);
+  const magicianKnowledgeText = magicianMatches
+    .map((match) => `${match.name}：\n${match.bio}`)
+    .join("\n\n---\n\n");
+
+  const retrievedKnowledge = [termKnowledgeText, magicianKnowledgeText, retrievedTrickKnowledge]
+    .filter(Boolean)
+    .join("\n\n---\n\n");
+
+  const knowledgeSources = dedupeKnowledgeSources([
+    ...presetKnowledgeSources,
+    ...termMatches.map((match): KnowledgeSourceRef => ({ title: match.term, source: "term" })),
+    ...magicianMatches.map((match): KnowledgeSourceRef => ({ title: match.name, source: "person" })),
+    ...extractKnowledgeSourceTitles(retrievedTrickKnowledge).map(
+      (title): KnowledgeSourceRef => ({ title, source: "trick" })
+    ),
+  ]);
+
   return {
     history,
     fileContext,
     retrievedKnowledge,
-    knowledgeSources: extractKnowledgeSourceTitles(retrievedKnowledge),
+    knowledgeSources,
     usedFileInsights: uniqueInsights,
   };
 }
