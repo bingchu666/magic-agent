@@ -6,6 +6,8 @@ import {
   FileInsight,
   FileJob,
   FileJobStatus,
+  Folder,
+  KnowledgeCardRecord,
   Locale,
   Message,
   Thread,
@@ -353,6 +355,172 @@ export const supabaseDb = {
     assertNoError(error, "Failed to create message");
     await supabaseDb.touchThread(payload.threadId);
     return message;
+  },
+
+  // ── Folders ────────────────────────────────────────────
+
+  async listFolders(userId: string): Promise<Folder[]> {
+    const supabase = await sc();
+    const { data, error } = await supabase
+      .from("folders")
+      .select("*")
+      .eq("user_id", userId)
+      .order("sort_order", { ascending: true });
+    assertNoError(error, "Failed to list folders");
+    return fromDatabaseRows<Folder>(data);
+  },
+
+  async createFolder(userId: string, name: string): Promise<Folder> {
+    const supabase = await sc();
+    const now = nowIso();
+    const folder: Folder = {
+      id: createId("folder"),
+      userId,
+      name,
+      // New folders sort to the end of the list; Date.now() is monotonic
+      // enough for a simple append-at-bottom ordering with no extra query.
+      sortOrder: Date.now(),
+      createdAt: now,
+      updatedAt: now,
+    };
+    const { error } = await supabase.from("folders").insert(toDatabaseRow(folder));
+    assertNoError(error, "Failed to create folder");
+    return folder;
+  },
+
+  async getFolder(folderId: string): Promise<Folder | null> {
+    const supabase = await sc();
+    const { data, error } = await supabase.from("folders").select("*").eq("id", folderId).maybeSingle();
+    assertNoError(error, "Failed to load folder");
+    return fromDatabaseRow<Folder>(data);
+  },
+
+  async updateFolder(
+    folderId: string,
+    userId: string,
+    patch: Partial<Pick<Folder, "name" | "sortOrder">>
+  ): Promise<Folder | null> {
+    const supabase = await sc();
+    const folder = await supabaseDb.getFolder(folderId);
+    if (!folder || folder.userId !== userId) return null;
+
+    const updates: Record<string, unknown> = { updatedAt: nowIso() };
+    if (typeof patch.name === "string") updates.name = patch.name;
+    if (typeof patch.sortOrder === "number") updates.sortOrder = patch.sortOrder;
+
+    const { error } = await supabase.from("folders").update(toDatabaseRow(updates)).eq("id", folderId);
+    assertNoError(error, "Failed to update folder");
+
+    return { ...folder, ...patch, updatedAt: updates.updatedAt as string };
+  },
+
+  // Cards that belonged to this folder are unfiled, not deleted (`folder_id`
+  // is ON DELETE SET NULL at the schema level) — matches mainstream product
+  // behavior and the user's steer during planning.
+  async deleteFolder(folderId: string, userId: string): Promise<Folder | null> {
+    const supabase = await sc();
+    const folder = await supabaseDb.getFolder(folderId);
+    if (!folder || folder.userId !== userId) return null;
+
+    const { error } = await supabase.from("folders").delete().eq("id", folderId);
+    assertNoError(error, "Failed to delete folder");
+    return folder;
+  },
+
+  // ── Knowledge Cards ────────────────────────────────────
+  //
+  // The parent/child/related/branch tree + per-card UI metadata that used to
+  // live only in browser localStorage (STORAGE_KEY "magic_atlas_glass_stage_v2").
+  // Message content itself lives in Thread/Message via `threadId`, not here.
+
+  async listKnowledgeCards(userId: string): Promise<KnowledgeCardRecord[]> {
+    const supabase = await sc();
+    const { data, error } = await supabase
+      .from("knowledge_cards")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true });
+    assertNoError(error, "Failed to list knowledge cards");
+    return fromDatabaseRows<KnowledgeCardRecord>(data);
+  },
+
+  async getKnowledgeCard(cardId: string): Promise<KnowledgeCardRecord | null> {
+    const supabase = await sc();
+    const { data, error } = await supabase
+      .from("knowledge_cards")
+      .select("*")
+      .eq("id", cardId)
+      .maybeSingle();
+    assertNoError(error, "Failed to load knowledge card");
+    return fromDatabaseRow<KnowledgeCardRecord>(data);
+  },
+
+  async createKnowledgeCard(
+    payload: Omit<KnowledgeCardRecord, "id" | "createdAt" | "updatedAt">
+  ): Promise<KnowledgeCardRecord> {
+    const supabase = await sc();
+    const now = nowIso();
+    const card: KnowledgeCardRecord = {
+      id: createId("card"),
+      createdAt: now,
+      updatedAt: now,
+      ...payload,
+    };
+    const { error } = await supabase.from("knowledge_cards").insert(toDatabaseRow(card));
+    assertNoError(error, "Failed to create knowledge card");
+    return card;
+  },
+
+  async updateKnowledgeCard(
+    cardId: string,
+    userId: string,
+    patch: Partial<
+      Pick<
+        KnowledgeCardRecord,
+        "title" | "question" | "status" | "unread" | "threadId" | "folderId" | "parentId" | "relation"
+      >
+    >
+  ): Promise<KnowledgeCardRecord | null> {
+    const supabase = await sc();
+    const card = await supabaseDb.getKnowledgeCard(cardId);
+    if (!card || card.userId !== userId) return null;
+
+    const updates: Record<string, unknown> = { updatedAt: nowIso() };
+    if (typeof patch.title === "string") updates.title = patch.title;
+    if (typeof patch.question === "string") updates.question = patch.question;
+    if (patch.status === "idle" || patch.status === "error") updates.status = patch.status;
+    if (typeof patch.unread === "boolean") updates.unread = patch.unread;
+    if (patch.threadId !== undefined) updates.threadId = patch.threadId;
+    if (patch.folderId !== undefined) updates.folderId = patch.folderId;
+    if (patch.parentId !== undefined) updates.parentId = patch.parentId;
+    if (patch.relation) updates.relation = patch.relation;
+
+    const { error } = await supabase
+      .from("knowledge_cards")
+      .update(toDatabaseRow(updates))
+      .eq("id", cardId);
+    assertNoError(error, "Failed to update knowledge card");
+
+    return { ...card, ...patch, updatedAt: updates.updatedAt as string };
+  },
+
+  // Deletes the card's own thread (and cascades its messages/learning state
+  // via the existing deleteThread) before removing the card row itself.
+  // Whole-subtree deletes (a root card's children/branches) stay a
+  // client-side loop responsibility, same as every other multi-row delete
+  // in this codebase.
+  async deleteKnowledgeCard(cardId: string, userId: string): Promise<KnowledgeCardRecord | null> {
+    const supabase = await sc();
+    const card = await supabaseDb.getKnowledgeCard(cardId);
+    if (!card || card.userId !== userId) return null;
+
+    if (card.threadId) {
+      await supabaseDb.deleteThread(card.threadId, userId);
+    }
+
+    const { error } = await supabase.from("knowledge_cards").delete().eq("id", cardId);
+    assertNoError(error, "Failed to delete knowledge card");
+    return card;
   },
 
   // ── Videos ─────────────────────────────────────────────

@@ -22,6 +22,42 @@ export type Thread = {
   updatedAt: string;
 };
 
+export type Folder = {
+  id: string;
+  userId: string;
+  name: string;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+// Mirrors the client-side `CardRelation` union in KnowledgeWorkspace.tsx —
+// kept as a separate declaration there (not imported from here) so Phase A
+// of the folders/knowledge-cards migration can ship without touching that
+// file at all; the two are unified once the client starts reading this API.
+export type CardRelation = "root" | "child" | "related" | "branch";
+
+// Server-side counterpart to the client's `KnowledgeCard` type
+// (KnowledgeWorkspace.tsx) — the parent/child/related/branch tree +
+// per-card UI metadata (title, status, unread, folder assignment).
+// Message content itself lives in Thread/Message via `threadId`, not here.
+// `status` deliberately excludes "streaming" — that's ephemeral, per-tab
+// UI state the client layers on top locally, never persisted.
+export type KnowledgeCardRecord = {
+  id: string;
+  userId: string;
+  threadId: string | null;
+  parentId: string | null;
+  folderId: string | null;
+  relation: CardRelation;
+  title: string;
+  question: string;
+  status: "idle" | "error";
+  unread: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type ThreadLearningState = {
   threadId: string;
   goalTopic: string | null;

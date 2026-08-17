@@ -178,6 +178,37 @@ CREATE TABLE magic_term_chunks (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Named containers for organizing root-level knowledge cards (see below).
+CREATE TABLE folders (
+  id TEXT PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE RESTRICT,
+  name TEXT NOT NULL,
+  sort_order DOUBLE PRECISION NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- The parent/child/related/branch conversation tree + per-card UI metadata
+-- (title, status, unread, folder assignment). Message content itself lives
+-- in threads/messages above — this table only adds the tree/metadata layer
+-- that previously lived exclusively in browser localStorage.
+CREATE TABLE knowledge_cards (
+  id TEXT PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES profiles(id) ON DELETE RESTRICT,
+  thread_id TEXT REFERENCES threads(id) ON DELETE RESTRICT,
+  parent_id TEXT REFERENCES knowledge_cards(id) ON DELETE RESTRICT,
+  folder_id TEXT REFERENCES folders(id) ON DELETE SET NULL,
+  relation TEXT NOT NULL CHECK (relation IN ('root', 'child', 'related', 'branch')),
+  title TEXT NOT NULL,
+  question TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'idle' CHECK (status IN ('idle', 'error')),
+  unread BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (relation = 'root' OR folder_id IS NULL),
+  CHECK ((relation = 'root') = (parent_id IS NULL))
+);
+
 -- 3. Indexes
 CREATE INDEX idx_threads_user_updated ON threads(user_id, updated_at DESC);
 CREATE INDEX idx_messages_thread_created ON messages(thread_id, created_at ASC);
@@ -189,6 +220,10 @@ CREATE INDEX idx_trick_chunks_embedding ON trick_chunks USING hnsw (embedding ve
 CREATE INDEX idx_magic_terms_term ON magic_terms(term);
 CREATE INDEX idx_magic_term_chunks_term ON magic_term_chunks(term_id);
 CREATE INDEX idx_magic_term_chunks_embedding ON magic_term_chunks USING hnsw (embedding vector_cosine_ops);
+CREATE UNIQUE INDEX idx_knowledge_cards_thread ON knowledge_cards(thread_id) WHERE thread_id IS NOT NULL;
+CREATE INDEX idx_knowledge_cards_user_created ON knowledge_cards(user_id, created_at DESC);
+CREATE INDEX idx_knowledge_cards_folder ON knowledge_cards(folder_id);
+CREATE INDEX idx_folders_user_sort ON folders(user_id, sort_order);
 
 -- 4. Auto-create profile row when a new user signs up
 CREATE OR REPLACE FUNCTION public.handle_new_user()
@@ -317,6 +352,8 @@ ALTER TABLE tricks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE trick_chunks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE magic_terms ENABLE ROW LEVEL SECURITY;
 ALTER TABLE magic_term_chunks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE folders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE knowledge_cards ENABLE ROW LEVEL SECURITY;
 
 -- 6. RLS Policies
 
@@ -332,6 +369,14 @@ GRANT UPDATE (name, locale) ON public.profiles TO authenticated;
 -- Threads
 CREATE POLICY "Users manage own threads" ON threads FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 CREATE POLICY "Admins read all threads" ON threads FOR SELECT USING (public.is_admin());
+
+-- Folders
+CREATE POLICY "Users manage own folders" ON folders FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Admins read all folders" ON folders FOR SELECT USING (public.is_admin());
+
+-- Knowledge cards
+CREATE POLICY "Users manage own knowledge cards" ON knowledge_cards FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
+CREATE POLICY "Admins read all knowledge cards" ON knowledge_cards FOR SELECT USING (public.is_admin());
 
 -- Messages
 CREATE POLICY "Users manage own messages" ON messages FOR ALL USING (
