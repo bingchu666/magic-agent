@@ -8,7 +8,6 @@ import {
   BookOpenText,
   FileStack,
   Languages,
-  MessageCircleMore,
   Network,
   ShieldCheck,
   Sparkles,
@@ -18,7 +17,6 @@ import { useSession } from "@/features/auth/session.client";
 import { t } from "@/lib/ui/i18n";
 
 const userNav = [
-  { href: "/chat", key: "chat" as const, icon: MessageCircleMore, hintZh: "线性对话与陪练", hintEn: "Chat & coaching" },
   { href: "/explore", key: "explore" as const, icon: Network, hintZh: "非线性知识地图", hintEn: "Knowledge maps" },
   { href: "/files", key: "files" as const, icon: FileStack, hintZh: "资料解析与洞察", hintEn: "Sources & insights" },
 ];
@@ -31,9 +29,8 @@ const adminNav = [
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { user, setLocale } = useSession();
-  const isChatPage = pathname === "/chat" || pathname.startsWith("/chat/");
   const isExplorePage = pathname === "/explore" || pathname.startsWith("/explore/");
-  const isImmersivePage = isChatPage || isExplorePage;
+  const isImmersivePage = isExplorePage;
 
   const copy = t(user?.locale ?? "zh");
   const isZh = user?.locale !== "en";
@@ -88,9 +85,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           "magic-app-layout",
           isExplorePage
             ? "h-screen max-w-none overflow-hidden p-0"
-            : isChatPage
-              ? "magic-chat-layout"
-              : "magic-page-layout"
+            : "magic-page-layout"
         )}
       >
         {!isImmersivePage ? (
@@ -130,7 +125,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <Network size={18} />
               <span>
                 <strong>{isZh ? "打开层级卡片" : "Open Magic Atlas"}</strong>
-                <small>{isZh ? "把对话变成知识地图" : "Turn chat into a map"}</small>
+                <small>{isZh ? "把问题变成知识地图" : "Turn questions into a map"}</small>
               </span>
             </Link>
           </aside>

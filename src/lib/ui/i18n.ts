@@ -3,11 +3,8 @@ import { Locale } from "@/lib/domain/types";
 type Copy = {
   appName: string;
   appTagline: string;
-  chatInputPlaceholder: string;
-  newThread: string;
   files: string;
   settings: string;
-  chat: string;
   explore: string;
   adminVideos: string;
   adminModeration: string;
@@ -28,11 +25,8 @@ const dictionary: Record<Locale, Copy> = {
   zh: {
     appName: "Magic Agent",
     appTagline: "魔术教学与演出陪练平台",
-    chatInputPlaceholder: "输入问题，例如：给我一个三分钟纸牌流程",
-    newThread: "新建对话",
     files: "文件",
     settings: "设置",
-    chat: "对话",
     explore: "层级卡片",
     adminVideos: "视频库管理",
     adminModeration: "安全审计",
@@ -51,11 +45,8 @@ const dictionary: Record<Locale, Copy> = {
   en: {
     appName: "Magic Agent",
     appTagline: "Magic coaching and performance copilot",
-    chatInputPlaceholder: "Ask anything, e.g. Build a 3-minute card routine",
-    newThread: "New thread",
     files: "Files",
     settings: "Settings",
-    chat: "Chat",
     explore: "Atlas",
     adminVideos: "Video Admin",
     adminModeration: "Moderation",

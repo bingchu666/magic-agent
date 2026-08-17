@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useSession } from "@/features/auth/session.client";
+import { DEFAULT_PRODUCT_PATH } from "@/lib/routes";
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -22,9 +23,9 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // Logged in + on /auth or / → redirect to /chat
+    // Logged in + on /auth or / → open the primary product workspace.
     if (user && (pathname === "/auth" || pathname === "/")) {
-      router.replace("/chat");
+      router.replace(DEFAULT_PRODUCT_PATH);
     }
   }, [loading, user, pathname, isPublicPath, router]);
 
