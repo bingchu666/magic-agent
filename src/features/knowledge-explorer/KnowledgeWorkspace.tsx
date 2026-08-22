@@ -6,10 +6,12 @@ import {
   ArrowUpRight,
   Bookmark,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Copy,
   FileUp,
+  Folder as FolderIcon,
   GitBranch,
   Home,
   Loader2,
@@ -18,6 +20,7 @@ import {
   Network,
   Paperclip,
   PanelLeft,
+  Pencil,
   Plus,
   Send,
   Settings,
@@ -29,6 +32,7 @@ import Link from "next/link";
 import {
   type CSSProperties,
   type FormEvent,
+  type ReactNode,
   type Ref,
   useEffect,
   useMemo,
@@ -386,6 +390,165 @@ function RelationIcon({ relation }: { relation: CardRelation }) {
   return <Home size={16} />;
 }
 
+// Collapsible group in the "对话/Chats" sidebar list — one per real folder,
+// plus one more (no rename/delete actions) for the "未归类/Unfiled" bucket.
+// Renders nothing extra when there are zero folders (the caller skips this
+// entirely in that case) so a user who never creates a folder keeps the
+// exact flat list this sidebar always had.
+function FolderGroup({
+  label,
+  count,
+  isOpen,
+  onToggle,
+  onRename,
+  onDelete,
+  locale,
+  children,
+}: {
+  label: string;
+  count: number;
+  isOpen: boolean;
+  onToggle: () => void;
+  onRename?: () => void;
+  onDelete?: () => void;
+  locale: Locale;
+  children: ReactNode;
+}) {
+  return (
+    <div className={`knowledge-stage-folder-group ${isOpen ? "is-open" : ""}`}>
+      <div className="knowledge-stage-folder-header">
+        <button type="button" className="knowledge-stage-folder-toggle" onClick={onToggle}>
+          <ChevronDown size={13} className="knowledge-stage-folder-chevron" />
+          <FolderIcon size={14} />
+          <span>{label}</span>
+          <i>{count}</i>
+        </button>
+        {onRename || onDelete ? (
+          <div className="knowledge-stage-folder-actions">
+            {onRename ? (
+              <button
+                type="button"
+                onClick={onRename}
+                aria-label={locale === "zh" ? "重命名文件夹" : "Rename folder"}
+                title={locale === "zh" ? "重命名" : "Rename"}
+              >
+                <Pencil size={12} />
+              </button>
+            ) : null}
+            {onDelete ? (
+              <button
+                type="button"
+                onClick={onDelete}
+                aria-label={locale === "zh" ? "删除文件夹" : "Delete folder"}
+                title={locale === "zh" ? "删除文件夹" : "Delete folder"}
+              >
+                <Trash2 size={12} />
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+      {isOpen ? <div className="knowledge-stage-folder-body">{children}</div> : null}
+    </div>
+  );
+}
+
+// One row in the sidebar's root-card list — identical markup whether it's
+// rendered flat (no folders yet) or nested inside a FolderGroup. The
+// move-to-folder control only appears once at least one folder exists
+// (showMoveMenu), which is what keeps the zero-folder case pixel-identical
+// to the sidebar's original flat list.
+function CardRow({
+  card,
+  isActive,
+  locale,
+  folders,
+  showMoveMenu,
+  moveMenuOpen,
+  onOpen,
+  onDelete,
+  onToggleMoveMenu,
+  onMoveToFolder,
+  onCreateFolderForCard,
+}: {
+  card: KnowledgeCard;
+  isActive: boolean;
+  locale: Locale;
+  folders: Folder[];
+  showMoveMenu: boolean;
+  moveMenuOpen: boolean;
+  onOpen: () => void;
+  onDelete: () => void;
+  onToggleMoveMenu: () => void;
+  onMoveToFolder: (folderId: string | null) => void;
+  onCreateFolderForCard: () => void;
+}) {
+  return (
+    <div className={`${isActive ? "is-active" : ""} ${showMoveMenu ? "has-move" : ""}`}>
+      <button
+        type="button"
+        className="knowledge-stage-project-select is-root-project"
+        onClick={onOpen}
+        aria-label={locale === "zh" ? `打开对话：${card.title}` : `Open: ${card.title}`}
+      >
+        <strong>
+          <span className="knowledge-stage-project-title-text">{card.title}</span>
+        </strong>
+      </button>
+      {showMoveMenu ? (
+        <div className="knowledge-stage-move-wrap">
+          <button
+            type="button"
+            className={moveMenuOpen ? "is-open" : ""}
+            onClick={onToggleMoveMenu}
+            aria-label={locale === "zh" ? `移动到文件夹：${card.title}` : `Move to folder: ${card.title}`}
+            title={locale === "zh" ? "移动到文件夹" : "Move to folder"}
+            aria-expanded={moveMenuOpen}
+            aria-haspopup="menu"
+          >
+            <FolderIcon size={13} />
+          </button>
+          {moveMenuOpen ? (
+            <div className="knowledge-stage-move-menu" role="menu">
+              {folders.map((folder) => (
+                <button
+                  key={folder.id}
+                  type="button"
+                  role="menuitem"
+                  className={card.folderId === folder.id ? "is-current" : ""}
+                  onClick={() => onMoveToFolder(folder.id)}
+                >
+                  <FolderIcon size={13} />
+                  <span>{folder.name}</span>
+                </button>
+              ))}
+              {card.folderId ? (
+                <button type="button" role="menuitem" onClick={() => onMoveToFolder(null)}>
+                  <X size={13} />
+                  <span>{locale === "zh" ? "移出文件夹" : "Remove from folder"}</span>
+                </button>
+              ) : null}
+              <button type="button" role="menuitem" className="is-create" onClick={onCreateFolderForCard}>
+                <Plus size={13} />
+                <span>{locale === "zh" ? "新建文件夹" : "New folder"}</span>
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      <button
+        type="button"
+        className="knowledge-stage-project-delete"
+        onClick={onDelete}
+        aria-label={locale === "zh" ? `删除对话：${card.title}` : `Delete: ${card.title}`}
+        title={locale === "zh" ? "删除对话" : "Delete"}
+      >
+        <Trash2 size={13} />
+      </button>
+    </div>
+  );
+}
+
 function KnowledgeCardConversation({
   card,
   onTerm,
@@ -531,11 +694,21 @@ export function KnowledgeWorkspace() {
   const [copied, setCopied] = useState(false);
   const [pageError, setPageError] = useState("");
   const [hydrated, setHydrated] = useState(false);
-  // Populated by the background server-reconcile effect below. No UI reads
-  // this yet in this phase — it exists so the Phase C folders sidebar can
-  // build directly on top without another data-fetch plumbing pass.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  // Populated by the background server-reconcile effect below.
   const [folders, setFolders] = useState<Folder[]>([]);
+  // Folder ids currently expanded in the sidebar — "__unfiled__" is the
+  // synthetic key for the always-last "未归类/Unfiled" bucket. Deliberately
+  // not persisted: folders default open on every load, matching how
+  // `expandedCardId` also always resets rather than remembering state.
+  const [openFolderIds, setOpenFolderIds] = useState<Set<string>>(new Set());
+  const [moveMenuCardId, setMoveMenuCardId] = useState<string | null>(null);
+  const [folderModal, setFolderModal] = useState<
+    { mode: "create"; assignToCardId?: string } | { mode: "rename"; folderId: string } | null
+  >(null);
+  const [folderNameDraft, setFolderNameDraft] = useState("");
+  const [folderModalError, setFolderModalError] = useState("");
+  const [savingFolder, setSavingFolder] = useState(false);
+  const [deleteFolderId, setDeleteFolderId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [expandedCardId, setExpandedCardId] = useState<string | null>(null);
   const [childCardDragPosition, setChildCardDragPosition] = useState<{
@@ -778,6 +951,30 @@ export function KnowledgeWorkspace() {
   }, [uploadMenuOpen]);
 
   useEffect(() => {
+    if (!moveMenuCardId) return;
+
+    // Matched by class rather than a ref (unlike the upload menu above)
+    // because this menu can open from any card row in the sidebar list —
+    // a single ref can't follow whichever row is currently open.
+    const closeMenu = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target?.closest?.(".knowledge-stage-move-wrap")) {
+        setMoveMenuCardId(null);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMoveMenuCardId(null);
+    };
+
+    document.addEventListener("pointerdown", closeMenu);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeMenu);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [moveMenuCardId]);
+
+  useEffect(() => {
     try {
       const raw = window.localStorage.getItem(STORAGE_KEY);
       if (raw) {
@@ -938,6 +1135,20 @@ export function KnowledgeWorkspace() {
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
     [cards]
   );
+  const cardsByFolder = useMemo(() => {
+    const byFolder = new Map<string, KnowledgeCard[]>();
+    const unfiled: KnowledgeCard[] = [];
+    for (const card of sidebarRootCards) {
+      if (card.folderId) {
+        const list = byFolder.get(card.folderId);
+        if (list) list.push(card);
+        else byFolder.set(card.folderId, [card]);
+      } else {
+        unfiled.push(card);
+      }
+    }
+    return { byFolder, unfiled };
+  }, [sidebarRootCards]);
   const nextCard = activeCard
     ? [...cards]
         .filter((card) => card.parentId === activeCard.id)
@@ -1775,6 +1986,114 @@ export function KnowledgeWorkspace() {
     }
   };
 
+  const toggleFolderOpen = (key: string) => {
+    setOpenFolderIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  // `assignToCardId` is set when this modal was opened from a card's move-
+  // to-folder menu ("新建文件夹") — on success the new folder is assigned to
+  // that card in the same flow, mirroring the same affordance in Claude.ai.
+  const openCreateFolderModal = (assignToCardId?: string) => {
+    setFolderModal({ mode: "create", assignToCardId });
+    setFolderNameDraft("");
+    setFolderModalError("");
+    setMoveMenuCardId(null);
+  };
+
+  const openRenameFolderModal = (folder: Folder) => {
+    setFolderModal({ mode: "rename", folderId: folder.id });
+    setFolderNameDraft(folder.name);
+    setFolderModalError("");
+  };
+
+  const moveCardToFolder = (cardId: string, folderId: string | null) => {
+    commitCards((previous) =>
+      previous.map((item) => (item.id === cardId ? { ...item, folderId } : item))
+    );
+    setMoveMenuCardId(null);
+    if (folderId) setOpenFolderIds((previous) => new Set(previous).add(folderId));
+    syncKnowledgeCardPatch(cardId, { folderId });
+  };
+
+  const submitFolderModal = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!folderModal) return;
+    const name = folderNameDraft.trim();
+    if (!name) {
+      setFolderModalError(locale === "zh" ? "请输入文件夹名称" : "Enter a folder name");
+      return;
+    }
+    setSavingFolder(true);
+    setFolderModalError("");
+    try {
+      if (folderModal.mode === "create") {
+        const data = await apiJson<{ item: Folder }>("/api/folders", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        });
+        setFolders((previous) => [...previous, data.item].sort((a, b) => a.sortOrder - b.sortOrder));
+        setOpenFolderIds((previous) => new Set(previous).add(data.item.id));
+        if (folderModal.assignToCardId) {
+          moveCardToFolder(folderModal.assignToCardId, data.item.id);
+        }
+      } else {
+        const data = await apiJson<{ item: Folder }>(`/api/folders/${folderModal.folderId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        });
+        setFolders((previous) =>
+          previous.map((item) => (item.id === data.item.id ? data.item : item))
+        );
+      }
+      setFolderModal(null);
+    } catch (error) {
+      setFolderModalError(
+        error instanceof Error
+          ? error.message
+          : locale === "zh"
+            ? "保存文件夹失败"
+            : "Failed to save the folder"
+      );
+    } finally {
+      setSavingFolder(false);
+    }
+  };
+
+  // The server unfiles the folder's cards (folder_id -> null) rather than
+  // deleting them — mirrored locally so the sidebar doesn't wait on the
+  // next background reconcile to reflect it.
+  const confirmDeleteFolder = async () => {
+    if (!deleteFolderId) return;
+    setSavingFolder(true);
+    try {
+      await apiJson(`/api/folders/${deleteFolderId}`, { method: "DELETE" });
+      setFolders((previous) => previous.filter((item) => item.id !== deleteFolderId));
+      commitCards((previous) =>
+        previous.map((item) =>
+          item.folderId === deleteFolderId ? { ...item, folderId: null } : item
+        )
+      );
+      setDeleteFolderId(null);
+    } catch (error) {
+      setPageError(
+        error instanceof Error
+          ? error.message
+          : locale === "zh"
+            ? "删除文件夹失败"
+            : "Failed to delete the folder"
+      );
+    } finally {
+      setSavingFolder(false);
+    }
+  };
+
   const copyAnswer = async (card = activeCard) => {
     const answer = lastAssistant(card);
     if (!answer) return;
@@ -1819,34 +2138,97 @@ export function KnowledgeWorkspace() {
             <Network size={14} />
             <span>{locale === "zh" ? "对话" : "Chats"}</span>
             <i>{sidebarRootCards.length}</i>
+            <button
+              type="button"
+              className="knowledge-stage-projects-add"
+              onClick={() => openCreateFolderModal()}
+              aria-label={locale === "zh" ? "新建文件夹" : "New folder"}
+              title={locale === "zh" ? "新建文件夹" : "New folder"}
+            >
+              <Plus size={12} />
+            </button>
           </div>
           <nav>
-            {sidebarRootCards.map((card) => (
-              <div
-                key={card.id}
-                className={card.id === activeRootCard?.id ? "is-active" : ""}
-              >
-                <button
-                  type="button"
-                  className="knowledge-stage-project-select is-root-project"
-                  onClick={() => focusCard(card.id)}
-                  aria-label={locale === "zh" ? `打开对话：${card.title}` : `Open: ${card.title}`}
-                >
-                  <strong>
-                    <span className="knowledge-stage-project-title-text">{card.title}</span>
-                  </strong>
-                </button>
-                <button
-                  type="button"
-                  className="knowledge-stage-project-delete"
-                  onClick={() => setDeleteCardId(card.id)}
-                  aria-label={locale === "zh" ? `删除对话：${card.title}` : `Delete: ${card.title}`}
-                  title={locale === "zh" ? "删除对话" : "Delete"}
-                >
-                  <Trash2 size={13} />
-                </button>
-              </div>
-            ))}
+            {folders.length === 0
+              ? sidebarRootCards.map((card) => (
+                  <CardRow
+                    key={card.id}
+                    card={card}
+                    isActive={card.id === activeRootCard?.id}
+                    locale={locale}
+                    folders={folders}
+                    showMoveMenu={false}
+                    moveMenuOpen={false}
+                    onOpen={() => focusCard(card.id)}
+                    onDelete={() => setDeleteCardId(card.id)}
+                    onToggleMoveMenu={() => {}}
+                    onMoveToFolder={() => {}}
+                    onCreateFolderForCard={() => {}}
+                  />
+                ))
+              : (
+                  <>
+                    {folders.map((folder) => (
+                      <FolderGroup
+                        key={folder.id}
+                        label={folder.name}
+                        count={(cardsByFolder.byFolder.get(folder.id) ?? []).length}
+                        isOpen={openFolderIds.has(folder.id)}
+                        onToggle={() => toggleFolderOpen(folder.id)}
+                        onRename={() => openRenameFolderModal(folder)}
+                        onDelete={() => setDeleteFolderId(folder.id)}
+                        locale={locale}
+                      >
+                        {(cardsByFolder.byFolder.get(folder.id) ?? []).map((card) => (
+                          <CardRow
+                            key={card.id}
+                            card={card}
+                            isActive={card.id === activeRootCard?.id}
+                            locale={locale}
+                            folders={folders}
+                            showMoveMenu
+                            moveMenuOpen={moveMenuCardId === card.id}
+                            onOpen={() => focusCard(card.id)}
+                            onDelete={() => setDeleteCardId(card.id)}
+                            onToggleMoveMenu={() =>
+                              setMoveMenuCardId((current) => (current === card.id ? null : card.id))
+                            }
+                            onMoveToFolder={(folderId) => moveCardToFolder(card.id, folderId)}
+                            onCreateFolderForCard={() => openCreateFolderModal(card.id)}
+                          />
+                        ))}
+                      </FolderGroup>
+                    ))}
+                    {cardsByFolder.unfiled.length > 0 ? (
+                      <FolderGroup
+                        label={locale === "zh" ? "未归类" : "Unfiled"}
+                        count={cardsByFolder.unfiled.length}
+                        isOpen={openFolderIds.has("__unfiled__")}
+                        onToggle={() => toggleFolderOpen("__unfiled__")}
+                        locale={locale}
+                      >
+                        {cardsByFolder.unfiled.map((card) => (
+                          <CardRow
+                            key={card.id}
+                            card={card}
+                            isActive={card.id === activeRootCard?.id}
+                            locale={locale}
+                            folders={folders}
+                            showMoveMenu
+                            moveMenuOpen={moveMenuCardId === card.id}
+                            onOpen={() => focusCard(card.id)}
+                            onDelete={() => setDeleteCardId(card.id)}
+                            onToggleMoveMenu={() =>
+                              setMoveMenuCardId((current) => (current === card.id ? null : card.id))
+                            }
+                            onMoveToFolder={(folderId) => moveCardToFolder(card.id, folderId)}
+                            onCreateFolderForCard={() => openCreateFolderModal(card.id)}
+                          />
+                        ))}
+                      </FolderGroup>
+                    ) : null}
+                  </>
+                )}
           </nav>
         </section>
 
@@ -2583,6 +2965,77 @@ export function KnowledgeWorkspace() {
                 disabled={creatingCard}
               >
                 {creatingCard ? <Loader2 className="animate-spin" size={15} /> : null}
+                {locale === "zh" ? "确认删除" : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {folderModal ? (
+        <div className="knowledge-stage-modal-backdrop">
+          <form className="knowledge-stage-modal" onSubmit={submitFolderModal}>
+            <div className="knowledge-stage-modal-icon">
+              <FolderIcon size={19} />
+            </div>
+            <span>
+              {folderModal.mode === "create"
+                ? locale === "zh" ? "新建文件夹" : "New folder"
+                : locale === "zh" ? "重命名文件夹" : "Rename folder"}
+            </span>
+            <h2>
+              {locale === "zh"
+                ? "用于整理侧边栏里的对话卡片"
+                : "Used to organize the conversation cards in your sidebar"}
+            </h2>
+            <input
+              type="text"
+              autoFocus
+              value={folderNameDraft}
+              onChange={(event) => setFolderNameDraft(event.target.value)}
+              placeholder={locale === "zh" ? "文件夹名称" : "Folder name"}
+              maxLength={80}
+            />
+            {folderModalError ? <p className="knowledge-stage-modal-error">{folderModalError}</p> : null}
+            <div>
+              <button type="button" onClick={() => setFolderModal(null)}>
+                {locale === "zh" ? "取消" : "Cancel"}
+              </button>
+              <button type="submit" disabled={!folderNameDraft.trim() || savingFolder}>
+                {savingFolder ? <Loader2 className="animate-spin" size={15} /> : null}
+                {folderModal.mode === "create"
+                  ? locale === "zh" ? "创建" : "Create"
+                  : locale === "zh" ? "保存" : "Save"}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
+      {deleteFolderId ? (
+        <div className="knowledge-stage-modal-backdrop">
+          <div className="knowledge-stage-modal">
+            <div className="knowledge-stage-modal-icon is-danger">
+              <Trash2 size={19} />
+            </div>
+            <span>{locale === "zh" ? "确认操作" : "Confirm action"}</span>
+            <h2>{locale === "zh" ? "删除这个文件夹？" : "Delete this folder?"}</h2>
+            <p className="knowledge-stage-delete-copy">
+              {locale === "zh"
+                ? "文件夹内的对话卡片会移到「未归类」，卡片本身不会被删除。"
+                : "Cards inside will move to “Unfiled” — the cards themselves are not deleted."}
+            </p>
+            <div>
+              <button type="button" onClick={() => setDeleteFolderId(null)}>
+                {locale === "zh" ? "取消" : "Cancel"}
+              </button>
+              <button
+                type="button"
+                className="is-danger"
+                onClick={() => void confirmDeleteFolder()}
+                disabled={savingFolder}
+              >
+                {savingFolder ? <Loader2 className="animate-spin" size={15} /> : null}
                 {locale === "zh" ? "确认删除" : "Delete"}
               </button>
             </div>
