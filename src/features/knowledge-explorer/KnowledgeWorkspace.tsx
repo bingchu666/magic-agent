@@ -6,7 +6,6 @@ import {
   ArrowUpRight,
   Bookmark,
   Check,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Copy,
@@ -32,7 +31,6 @@ import Link from "next/link";
 import {
   type CSSProperties,
   type FormEvent,
-  type ReactNode,
   type Ref,
   useEffect,
   useMemo,
@@ -390,71 +388,64 @@ function RelationIcon({ relation }: { relation: CardRelation }) {
   return <Home size={16} />;
 }
 
-// Collapsible group in the "对话/Chats" sidebar list — one per real folder,
-// plus one more (no rename/delete actions) for the "未归类/Unfiled" bucket.
-// Renders nothing extra when there are zero folders (the caller skips this
-// entirely in that case) so a user who never creates a folder keeps the
-// exact flat list this sidebar always had.
-function FolderGroup({
-  label,
+// Pinned row for one folder in the "对话/Chats" sidebar list, sorted above
+// the flat conversation list — styled like a conversation row (folder icon,
+// name, card count) so it reads as "a pinned item in the same list," not a
+// separate collapsible section. Clicking it opens the dedicated FolderView
+// overlay rather than expanding anything in place.
+function FolderRow({
+  folder,
   count,
-  isOpen,
-  onToggle,
+  locale,
+  onOpen,
   onRename,
   onDelete,
-  locale,
-  children,
 }: {
-  label: string;
+  folder: Folder;
   count: number;
-  isOpen: boolean;
-  onToggle: () => void;
-  onRename?: () => void;
-  onDelete?: () => void;
   locale: Locale;
-  children: ReactNode;
+  onOpen: () => void;
+  onRename: () => void;
+  onDelete: () => void;
 }) {
   return (
-    <div className={`knowledge-stage-folder-group ${isOpen ? "is-open" : ""}`}>
-      <div className="knowledge-stage-folder-header">
-        <button type="button" className="knowledge-stage-folder-toggle" onClick={onToggle}>
-          <ChevronDown size={13} className="knowledge-stage-folder-chevron" />
-          <FolderIcon size={14} />
-          <span>{label}</span>
-          <i>{count}</i>
-        </button>
-        {onRename || onDelete ? (
-          <div className="knowledge-stage-folder-actions">
-            {onRename ? (
-              <button
-                type="button"
-                onClick={onRename}
-                aria-label={locale === "zh" ? "重命名文件夹" : "Rename folder"}
-                title={locale === "zh" ? "重命名" : "Rename"}
-              >
-                <Pencil size={12} />
-              </button>
-            ) : null}
-            {onDelete ? (
-              <button
-                type="button"
-                onClick={onDelete}
-                aria-label={locale === "zh" ? "删除文件夹" : "Delete folder"}
-                title={locale === "zh" ? "删除文件夹" : "Delete folder"}
-              >
-                <Trash2 size={12} />
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
-      {isOpen ? <div className="knowledge-stage-folder-body">{children}</div> : null}
+    <div className="is-folder-row">
+      <button
+        type="button"
+        className="knowledge-stage-project-select is-root-project is-folder"
+        onClick={onOpen}
+        aria-label={locale === "zh" ? `打开文件夹：${folder.name}` : `Open folder: ${folder.name}`}
+      >
+        <FolderIcon size={15} />
+        <strong>
+          <span className="knowledge-stage-project-title-text">{folder.name}</span>
+        </strong>
+        <i>{count}</i>
+      </button>
+      <button
+        type="button"
+        className="knowledge-stage-project-delete"
+        onClick={onRename}
+        aria-label={locale === "zh" ? `重命名文件夹：${folder.name}` : `Rename folder: ${folder.name}`}
+        title={locale === "zh" ? "重命名" : "Rename"}
+      >
+        <Pencil size={13} />
+      </button>
+      <button
+        type="button"
+        className="knowledge-stage-project-delete"
+        onClick={onDelete}
+        aria-label={locale === "zh" ? `删除文件夹：${folder.name}` : `Delete folder: ${folder.name}`}
+        title={locale === "zh" ? "删除文件夹" : "Delete folder"}
+      >
+        <Trash2 size={13} />
+      </button>
     </div>
   );
 }
 
 // One row in the sidebar's root-card list — identical markup whether it's
-// rendered flat (no folders yet) or nested inside a FolderGroup. The
+// rendered in the sidebar's flat list or inside the FolderView overlay. The
 // move-to-folder control only appears once at least one folder exists
 // (showMoveMenu), which is what keeps the zero-folder case pixel-identical
 // to the sidebar's original flat list.
@@ -545,6 +536,117 @@ function CardRow({
       >
         <Trash2 size={13} />
       </button>
+    </div>
+  );
+}
+
+// Dedicated overlay shown when a folder row is clicked — a separate view for
+// that folder's cards, modeled on `KnowledgeControlCenter`'s panel structure.
+// The sidebar itself never expands in place; this is the only way into a
+// folder's contents.
+function FolderView({
+  folder,
+  cards,
+  activeCardId,
+  locale,
+  folders,
+  moveMenuCardId,
+  onClose,
+  onRename,
+  onDelete,
+  onOpenCard,
+  onDeleteCard,
+  onToggleMoveMenu,
+  onMoveToFolder,
+  onCreateFolderForCard,
+}: {
+  folder: Folder;
+  cards: KnowledgeCard[];
+  activeCardId: string | undefined;
+  locale: Locale;
+  folders: Folder[];
+  moveMenuCardId: string | null;
+  onClose: () => void;
+  onRename: () => void;
+  onDelete: () => void;
+  onOpenCard: (cardId: string) => void;
+  onDeleteCard: (cardId: string) => void;
+  onToggleMoveMenu: (cardId: string) => void;
+  onMoveToFolder: (cardId: string, folderId: string | null) => void;
+  onCreateFolderForCard: (cardId: string) => void;
+}) {
+  return (
+    <div className="knowledge-folder-view-backdrop" onClick={onClose}>
+      <div className="knowledge-folder-view" onClick={(event) => event.stopPropagation()}>
+        <header>
+          <div>
+            <div className="knowledge-folder-view-icon">
+              <FolderIcon size={18} />
+            </div>
+            <div>
+              <small>{locale === "zh" ? "文件夹" : "Folder"}</small>
+              <h2>{folder.name}</h2>
+            </div>
+          </div>
+          <div className="knowledge-folder-view-actions">
+            <button
+              type="button"
+              onClick={onRename}
+              aria-label={locale === "zh" ? "重命名文件夹" : "Rename folder"}
+              title={locale === "zh" ? "重命名" : "Rename"}
+            >
+              <Pencil size={15} />
+            </button>
+            <button
+              type="button"
+              onClick={onDelete}
+              aria-label={locale === "zh" ? "删除文件夹" : "Delete folder"}
+              title={locale === "zh" ? "删除文件夹" : "Delete folder"}
+            >
+              <Trash2 size={15} />
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label={locale === "zh" ? "关闭" : "Close"}
+              title={locale === "zh" ? "关闭" : "Close"}
+            >
+              <X size={15} />
+            </button>
+          </div>
+        </header>
+        <div className="knowledge-folder-view-body">
+          {cards.length === 0 ? (
+            <div className="knowledge-folder-view-empty">
+              <FolderIcon size={28} />
+              <p>
+                {locale === "zh"
+                  ? "这个文件夹还是空的。可以在对话列表里点击移动图标，把对话移进来。"
+                  : "This folder is empty. Use a card's move icon in the chat list to add one."}
+              </p>
+            </div>
+          ) : (
+            <nav className="knowledge-card-row-list">
+              {cards.map((card) => (
+                <CardRow
+                  key={card.id}
+                  card={card}
+                  isActive={card.id === activeCardId}
+                  locale={locale}
+                  folders={folders}
+                  showMoveMenu
+                  moveMenuOpen={moveMenuCardId === card.id}
+                  onOpen={() => onOpenCard(card.id)}
+                  onDelete={() => onDeleteCard(card.id)}
+                  onToggleMoveMenu={() => onToggleMoveMenu(card.id)}
+                  onMoveToFolder={(folderId) => onMoveToFolder(card.id, folderId)}
+                  onCreateFolderForCard={() => onCreateFolderForCard(card.id)}
+                />
+              ))}
+            </nav>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -696,11 +798,10 @@ export function KnowledgeWorkspace() {
   const [hydrated, setHydrated] = useState(false);
   // Populated by the background server-reconcile effect below.
   const [folders, setFolders] = useState<Folder[]>([]);
-  // Folder ids currently expanded in the sidebar — "__unfiled__" is the
-  // synthetic key for the always-last "未归类/Unfiled" bucket. Deliberately
-  // not persisted: folders default open on every load, matching how
+  // Id of the folder whose dedicated FolderView overlay is currently open —
+  // null means no overlay. Deliberately not persisted, matching how
   // `expandedCardId` also always resets rather than remembering state.
-  const [openFolderIds, setOpenFolderIds] = useState<Set<string>>(new Set());
+  const [openFolderView, setOpenFolderView] = useState<string | null>(null);
   const [moveMenuCardId, setMoveMenuCardId] = useState<string | null>(null);
   const [folderModal, setFolderModal] = useState<
     { mode: "create"; assignToCardId?: string } | { mode: "rename"; folderId: string } | null
@@ -1986,15 +2087,6 @@ export function KnowledgeWorkspace() {
     }
   };
 
-  const toggleFolderOpen = (key: string) => {
-    setOpenFolderIds((previous) => {
-      const next = new Set(previous);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
-
   // `assignToCardId` is set when this modal was opened from a card's move-
   // to-folder menu ("新建文件夹") — on success the new folder is assigned to
   // that card in the same flow, mirroring the same affordance in Claude.ai.
@@ -2016,7 +2108,6 @@ export function KnowledgeWorkspace() {
       previous.map((item) => (item.id === cardId ? { ...item, folderId } : item))
     );
     setMoveMenuCardId(null);
-    if (folderId) setOpenFolderIds((previous) => new Set(previous).add(folderId));
     syncKnowledgeCardPatch(cardId, { folderId });
   };
 
@@ -2038,7 +2129,6 @@ export function KnowledgeWorkspace() {
           body: JSON.stringify({ name }),
         });
         setFolders((previous) => [...previous, data.item].sort((a, b) => a.sortOrder - b.sortOrder));
-        setOpenFolderIds((previous) => new Set(previous).add(data.item.id));
         if (folderModal.assignToCardId) {
           moveCardToFolder(folderModal.assignToCardId, data.item.id);
         }
@@ -2080,6 +2170,7 @@ export function KnowledgeWorkspace() {
           item.folderId === deleteFolderId ? { ...item, folderId: null } : item
         )
       );
+      if (openFolderView === deleteFolderId) setOpenFolderView(null);
       setDeleteFolderId(null);
     } catch (error) {
       setPageError(
@@ -2148,87 +2239,36 @@ export function KnowledgeWorkspace() {
             <span>{locale === "zh" ? "对话" : "Chats"}</span>
             <i>{sidebarRootCards.length}</i>
           </div>
-          <nav>
-            {folders.length === 0
-              ? sidebarRootCards.map((card) => (
-                  <CardRow
-                    key={card.id}
-                    card={card}
-                    isActive={card.id === activeRootCard?.id}
-                    locale={locale}
-                    folders={folders}
-                    showMoveMenu={false}
-                    moveMenuOpen={false}
-                    onOpen={() => focusCard(card.id)}
-                    onDelete={() => setDeleteCardId(card.id)}
-                    onToggleMoveMenu={() => {}}
-                    onMoveToFolder={() => {}}
-                    onCreateFolderForCard={() => {}}
-                  />
-                ))
-              : (
-                  <>
-                    {folders.map((folder) => (
-                      <FolderGroup
-                        key={folder.id}
-                        label={folder.name}
-                        count={(cardsByFolder.byFolder.get(folder.id) ?? []).length}
-                        isOpen={openFolderIds.has(folder.id)}
-                        onToggle={() => toggleFolderOpen(folder.id)}
-                        onRename={() => openRenameFolderModal(folder)}
-                        onDelete={() => setDeleteFolderId(folder.id)}
-                        locale={locale}
-                      >
-                        {(cardsByFolder.byFolder.get(folder.id) ?? []).map((card) => (
-                          <CardRow
-                            key={card.id}
-                            card={card}
-                            isActive={card.id === activeRootCard?.id}
-                            locale={locale}
-                            folders={folders}
-                            showMoveMenu
-                            moveMenuOpen={moveMenuCardId === card.id}
-                            onOpen={() => focusCard(card.id)}
-                            onDelete={() => setDeleteCardId(card.id)}
-                            onToggleMoveMenu={() =>
-                              setMoveMenuCardId((current) => (current === card.id ? null : card.id))
-                            }
-                            onMoveToFolder={(folderId) => moveCardToFolder(card.id, folderId)}
-                            onCreateFolderForCard={() => openCreateFolderModal(card.id)}
-                          />
-                        ))}
-                      </FolderGroup>
-                    ))}
-                    {cardsByFolder.unfiled.length > 0 ? (
-                      <FolderGroup
-                        label={locale === "zh" ? "未归类" : "Unfiled"}
-                        count={cardsByFolder.unfiled.length}
-                        isOpen={openFolderIds.has("__unfiled__")}
-                        onToggle={() => toggleFolderOpen("__unfiled__")}
-                        locale={locale}
-                      >
-                        {cardsByFolder.unfiled.map((card) => (
-                          <CardRow
-                            key={card.id}
-                            card={card}
-                            isActive={card.id === activeRootCard?.id}
-                            locale={locale}
-                            folders={folders}
-                            showMoveMenu
-                            moveMenuOpen={moveMenuCardId === card.id}
-                            onOpen={() => focusCard(card.id)}
-                            onDelete={() => setDeleteCardId(card.id)}
-                            onToggleMoveMenu={() =>
-                              setMoveMenuCardId((current) => (current === card.id ? null : card.id))
-                            }
-                            onMoveToFolder={(folderId) => moveCardToFolder(card.id, folderId)}
-                            onCreateFolderForCard={() => openCreateFolderModal(card.id)}
-                          />
-                        ))}
-                      </FolderGroup>
-                    ) : null}
-                  </>
-                )}
+          <nav className="knowledge-card-row-list">
+            {folders.map((folder) => (
+              <FolderRow
+                key={folder.id}
+                folder={folder}
+                count={(cardsByFolder.byFolder.get(folder.id) ?? []).length}
+                locale={locale}
+                onOpen={() => setOpenFolderView(folder.id)}
+                onRename={() => openRenameFolderModal(folder)}
+                onDelete={() => setDeleteFolderId(folder.id)}
+              />
+            ))}
+            {cardsByFolder.unfiled.map((card) => (
+              <CardRow
+                key={card.id}
+                card={card}
+                isActive={card.id === activeRootCard?.id}
+                locale={locale}
+                folders={folders}
+                showMoveMenu={folders.length > 0}
+                moveMenuOpen={moveMenuCardId === card.id}
+                onOpen={() => focusCard(card.id)}
+                onDelete={() => setDeleteCardId(card.id)}
+                onToggleMoveMenu={() =>
+                  setMoveMenuCardId((current) => (current === card.id ? null : card.id))
+                }
+                onMoveToFolder={(folderId) => moveCardToFolder(card.id, folderId)}
+                onCreateFolderForCard={() => openCreateFolderModal(card.id)}
+              />
+            ))}
           </nav>
         </section>
 
@@ -3042,6 +3082,36 @@ export function KnowledgeWorkspace() {
           </div>
         </div>
       ) : null}
+
+      {openFolderView
+        ? (() => {
+            const folder = folders.find((item) => item.id === openFolderView);
+            if (!folder) return null;
+            return (
+              <FolderView
+                folder={folder}
+                cards={cardsByFolder.byFolder.get(folder.id) ?? []}
+                activeCardId={activeRootCard?.id}
+                locale={locale}
+                folders={folders}
+                moveMenuCardId={moveMenuCardId}
+                onClose={() => setOpenFolderView(null)}
+                onRename={() => openRenameFolderModal(folder)}
+                onDelete={() => setDeleteFolderId(folder.id)}
+                onOpenCard={(cardId) => {
+                  focusCard(cardId);
+                  setOpenFolderView(null);
+                }}
+                onDeleteCard={(cardId) => setDeleteCardId(cardId)}
+                onToggleMoveMenu={(cardId) =>
+                  setMoveMenuCardId((current) => (current === cardId ? null : cardId))
+                }
+                onMoveToFolder={(cardId, folderId) => moveCardToFolder(cardId, folderId)}
+                onCreateFolderForCard={(cardId) => openCreateFolderModal(cardId)}
+              />
+            );
+          })()
+        : null}
 
       {controlCenterMode ? (
         <KnowledgeControlCenter
