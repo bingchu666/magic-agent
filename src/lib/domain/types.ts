@@ -111,6 +111,12 @@ export type Message = {
   locale: Locale;
   attachmentIds?: string[];
   lessonPayload?: LessonPayload;
+  // Phase D fidelity columns. `quotedText` only applies to a user turn that
+  // had a selected passage attached; `groundingChecked`/`knowledgeSources`
+  // only apply to a completed assistant turn (undefined on older rows).
+  quotedText?: string;
+  groundingChecked?: boolean;
+  knowledgeSources?: KnowledgeSourceRef[];
   createdAt: string;
 };
 
@@ -271,6 +277,14 @@ export type ChatStreamRequest = {
    * state and citation instructions reflect it too.
    */
   presetKnowledgeSources?: KnowledgeSourceRef[];
+  /**
+   * The passage the user selected before asking this follow-up question, if
+   * any — kept separate from `userMessage` so it can be persisted on its own
+   * `quotedText` column instead of being permanently baked into the message
+   * text. The server reassembles the same combined prompt it always sent the
+   * model, from this field plus `userMessage`.
+   */
+  quotedText?: string;
 };
 
 export type ChatHistoryMessage = {

@@ -123,6 +123,10 @@ export async function POST(req: Request) {
             presetKnowledgeSources: Array.isArray(body.presetKnowledgeSources)
               ? body.presetKnowledgeSources.filter(isKnowledgeSourceRef).slice(0, 5)
               : undefined,
+            quotedText:
+              typeof body.quotedText === "string" && body.quotedText.trim()
+                ? body.quotedText
+                : undefined,
             userId: session.id,
             signal: abortController.signal,
             onThreadReady: (threadId, title) => {

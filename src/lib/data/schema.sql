@@ -35,6 +35,13 @@ CREATE TABLE messages (
   locale TEXT NOT NULL CHECK (locale IN ('zh', 'en')),
   attachment_ids TEXT[],
   lesson_payload JSONB,
+  -- Phase D — full fidelity for quoted passages + grounding badges. All
+  -- nullable: quoted_text only applies to a user turn with a selected
+  -- passage; grounding_checked/knowledge_sources only apply to an assistant
+  -- turn (see 20260822000000_add_message_fidelity_columns.sql).
+  quoted_text TEXT,
+  grounding_checked BOOLEAN,
+  knowledge_sources JSONB,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

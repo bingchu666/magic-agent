@@ -933,6 +933,7 @@ export function KnowledgeWorkspace() {
           id: message.id,
           role: message.role as "user" | "assistant",
           content: message.content,
+          quotedText: message.quotedText || undefined,
           attachments: (message.attachmentIds ?? [])
             .map((fileId) => files.find((file) => file.id === fileId))
             .filter((file): file is FileAsset => Boolean(file))
@@ -942,6 +943,8 @@ export function KnowledgeWorkspace() {
               mimeType: file.mimeType,
               size: file.size,
             })),
+          groundingChecked: message.groundingChecked || undefined,
+          knowledgeSources: message.knowledgeSources,
         }));
       commitCards((previous) =>
         previous.map((item) =>
@@ -1747,11 +1750,12 @@ export function KnowledgeWorkspace() {
         signal: abortController.signal,
         body: JSON.stringify({
           threadId: current?.threadId,
-          userMessage: quotedText
-            ? locale === "zh"
-              ? `引用内容：“${quotedText}”\n\n针对这段内容的问题：${normalized}`
-              : `Quoted passage: “${quotedText}”\n\nQuestion about this passage: ${normalized}`
-            : normalized,
+          // The server now reassembles the same "quoted passage + question"
+          // prompt it always sent the model — sending the clean question and
+          // quotedText separately lets the stored message content stay clean
+          // instead of permanently baking the quoted-passage boilerplate in.
+          userMessage: normalized,
+          quotedText: quotedText || undefined,
           locale,
           attachmentIds: attachmentIdsForMessage,
           clientHistory: history,
