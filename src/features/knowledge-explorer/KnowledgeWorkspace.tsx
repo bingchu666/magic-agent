@@ -39,7 +39,16 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useSession } from "@/features/auth/session.client";
 import { consumeSseStream } from "@/features/chat-agent/sse";
-import { ChatHistoryMessage, FileAsset, KnowledgeSourceRef, Locale, Thread } from "@/lib/domain/types";
+import {
+  ChatHistoryMessage,
+  FileAsset,
+  Folder,
+  KnowledgeCardRecord,
+  KnowledgeSourceRef,
+  Locale,
+  Message,
+  Thread,
+} from "@/lib/domain/types";
 import { createId } from "@/lib/domain/utils";
 import { MiniTreeMap, type MiniTreeNode } from "@/lib/ui/MiniTreeMap";
 import {
@@ -69,6 +78,11 @@ type KnowledgeCard = {
   id: string;
   threadId?: string;
   parentId: string | null;
+  // Only meaningful on root cards (relation === "root") — mirrors the DB
+  // CHECK constraint. Populated by the server reconcile; no UI reads it yet
+  // (that's Phase C's folders sidebar), but the field ships now so that
+  // phase doesn't need another data-shape migration.
+  folderId?: string | null;
   relation: CardRelation;
   title: string;
   question: string;
@@ -517,6 +531,11 @@ export function KnowledgeWorkspace() {
   const [copied, setCopied] = useState(false);
   const [pageError, setPageError] = useState("");
   const [hydrated, setHydrated] = useState(false);
+  // Populated by the background server-reconcile effect below. No UI reads
+  // this yet in this phase — it exists so the Phase C folders sidebar can
+  // build directly on top without another data-fetch plumbing pass.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [folders, setFolders] = useState<Folder[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [expandedCardId, setExpandedCardId] = useState<string | null>(null);
   const [childCardDragPosition, setChildCardDragPosition] = useState<{
@@ -546,6 +565,120 @@ export function KnowledgeWorkspace() {
     const next = typeof update === "function" ? update(cardsRef.current) : update;
     cardsRef.current = next;
     setCards(next);
+  };
+
+  // Fire-and-forget metadata sync to the server — every call site below
+  // already committed the change locally first, so the UI never waits on
+  // this. Failures are swallowed (logged only): the local state stays the
+  // source of truth for this tab, and the next successful sync self-heals
+  // any drift. If the row doesn't exist yet server-side (e.g. the built-in
+  // starter card, or any card created on a device from before this synced
+  // to the server), fall back to creating it instead of losing the update.
+  const syncKnowledgeCardPatch = (
+    cardId: string,
+    patch: Partial<{
+      title: string;
+      question: string;
+      status: "idle" | "error";
+      unread: boolean;
+      threadId: string | null;
+      folderId: string | null;
+    }>
+  ) => {
+    void (async () => {
+      try {
+        const response = await fetch(`/api/knowledge-cards/${cardId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        });
+        if (response.status === 404) {
+          const card = cardsRef.current.find((item) => item.id === cardId);
+          if (card) syncCreateKnowledgeCard(card);
+          return;
+        }
+        if (!response.ok) {
+          console.warn("Failed to sync card update", await response.text().catch(() => ""));
+        }
+      } catch (error) {
+        console.warn("Failed to sync card update", error);
+      }
+    })();
+  };
+
+  // Reads the card's current fields straight off cardsRef (always fresh,
+  // even mid-render) and syncs the metadata columns as a single patch —
+  // shared by every call site so each one doesn't hand-assemble its own
+  // partial payload.
+  const syncCardMetadata = (cardId: string) => {
+    const card = cardsRef.current.find((item) => item.id === cardId);
+    if (!card) return;
+    syncKnowledgeCardPatch(cardId, {
+      title: card.title,
+      question: card.question,
+      status: card.status === "streaming" ? undefined : card.status,
+      unread: card.unread,
+      threadId: card.threadId ?? null,
+      folderId: card.folderId ?? null,
+    });
+  };
+
+  const syncCreateKnowledgeCard = (card: KnowledgeCard) => {
+    void apiJson("/api/knowledge-cards", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: card.id,
+        threadId: card.threadId,
+        parentId: card.parentId,
+        folderId: card.folderId,
+        relation: card.relation,
+        title: card.title,
+        question: card.question,
+      }),
+    }).catch((error) => {
+      console.warn("Failed to sync new card to server", error);
+    });
+  };
+
+  // Cross-device message hydration: a card synced in by the reconcile
+  // effect below arrives with metadata only (title, tree position, etc) —
+  // its message history lives in threads/messages and has to be fetched
+  // separately. Guarded so it only ever fills a genuinely empty card, and
+  // the commit itself re-checks message length at apply time (not just at
+  // call time) so it can never clobber messages askCard already streamed
+  // in while this fetch was in flight.
+  const hydrateCardMessages = async (card: KnowledgeCard) => {
+    if (!card.threadId || card.messages.length > 0) return;
+    try {
+      const data = await apiJson<{ items: Message[] }>(`/api/threads/${card.threadId}/messages`);
+      if (data.items.length === 0) return;
+      const mapped: KnowledgeMessage[] = data.items
+        .filter((message) => message.role === "user" || message.role === "assistant")
+        .map((message) => ({
+          id: message.id,
+          role: message.role as "user" | "assistant",
+          content: message.content,
+          attachments: (message.attachmentIds ?? [])
+            .map((fileId) => files.find((file) => file.id === fileId))
+            .filter((file): file is FileAsset => Boolean(file))
+            .map((file) => ({
+              id: file.id,
+              fileName: file.fileName,
+              mimeType: file.mimeType,
+              size: file.size,
+            })),
+        }));
+      commitCards((previous) =>
+        previous.map((item) =>
+          item.id === card.id && item.messages.length === 0
+            ? { ...item, messages: mapped }
+            : item
+        )
+      );
+    } catch (error) {
+      console.warn("Failed to hydrate card messages", error);
+    }
   };
 
   const loadFiles = async () => {
@@ -722,6 +855,67 @@ export function KnowledgeWorkspace() {
     );
   }, [hydrated, sidebarOpen]);
 
+  // Background server reconcile — runs once per login, after the
+  // instant-first-paint localStorage hydrate above already ran. Local-first,
+  // not a replace: merges only tree/UI metadata (never .messages, never the
+  // ephemeral "streaming" status) into cards that already exist locally by
+  // id, and appends any card the server knows about that this browser
+  // doesn't yet (e.g. created on another device). A card that exists only
+  // locally and was never synced is left alone here — it starts syncing
+  // forward the next time one of the mutation call sites touches it.
+  useEffect(() => {
+    if (!hydrated || !user?.id) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [folderData, cardData] = await Promise.all([
+          apiJson<{ items: Folder[] }>("/api/folders"),
+          apiJson<{ items: KnowledgeCardRecord[] }>("/api/knowledge-cards"),
+        ]);
+        if (cancelled) return;
+        setFolders(folderData.items);
+
+        commitCards((previous) => {
+          const localIds = new Set(previous.map((card) => card.id));
+          const merged = previous.map((card) => {
+            const remote = cardData.items.find((item) => item.id === card.id);
+            if (!remote) return card;
+            return {
+              ...card,
+              title: remote.title || card.title,
+              unread: remote.unread,
+              folderId: remote.folderId,
+              parentId: remote.parentId,
+              relation: remote.relation,
+              threadId: remote.threadId ?? card.threadId,
+            };
+          });
+          const additions: KnowledgeCard[] = cardData.items
+            .filter((remote) => !localIds.has(remote.id))
+            .map((remote) => ({
+              id: remote.id,
+              threadId: remote.threadId ?? undefined,
+              parentId: remote.parentId,
+              folderId: remote.folderId,
+              relation: remote.relation,
+              title: remote.title,
+              question: remote.question,
+              messages: [],
+              status: remote.status,
+              unread: remote.unread,
+              createdAt: remote.createdAt,
+            }));
+          return additions.length > 0 ? [...merged, ...additions] : merged;
+        });
+      } catch (error) {
+        console.warn("Failed to sync folders/knowledge cards from server", error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [hydrated, user?.id]);
+
   const activeCard = cards.find((card) => card.id === activeCardId) ?? cards[0];
   const parentCard =
     activeCard?.parentId
@@ -767,6 +961,23 @@ export function KnowledgeWorkspace() {
   const activeSelectionContext = activeCard
     ? cardSelectionContexts[activeCard.id] ?? ""
     : "";
+
+  useEffect(() => {
+    // Covers both "opened on a new device" (the card just arrived via the
+    // reconcile effect above with metadata only) and "focused any card that
+    // still has no messages but does have a real thread" — e.g. self-healing
+    // local data that lost its messages. A card with no threadId yet (never
+    // asked anything) is correctly left alone; there's nothing to fetch.
+    if (!activeCard || !activeCard.threadId || activeCard.messages.length > 0) return;
+    void hydrateCardMessages(activeCard);
+    // Deliberately narrow deps: these three primitives are exactly the
+    // guard condition above, so the effect only re-fires when one actually
+    // changes. Listing the whole `activeCard` object (a new reference every
+    // render) or `hydrateCardMessages` (recreated every render, always
+    // closes over current state) would refire this mid-fetch on unrelated
+    // re-renders and issue duplicate concurrent hydration requests.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeCard?.id, activeCard?.threadId, activeCard?.messages.length]);
 
   useEffect(() => {
     // Dragging is only remembered for as long as this card stays open —
@@ -966,6 +1177,7 @@ export function KnowledgeWorkspace() {
         item.id === card.id ? { ...item, threadId: thread.id, title: thread.title } : item
       )
     );
+    syncCardMetadata(card.id);
     return thread.id;
   };
 
@@ -1252,6 +1464,7 @@ export function KnowledgeWorkspace() {
               item.id === cardId ? { ...item, threadId, title: title || item.title } : item
             )
           );
+          syncCardMetadata(cardId);
         },
         token: ({ text }) => {
           if (!isCurrentGeneration()) return;
@@ -1313,6 +1526,7 @@ export function KnowledgeWorkspace() {
             : item
         )
       );
+      syncCardMetadata(cardId);
     } catch (error) {
       const isUserAbort =
         abortController.signal.aborted ||
@@ -1342,6 +1556,7 @@ export function KnowledgeWorkspace() {
               : item
           )
         );
+        syncCardMetadata(cardId);
       } else {
         const message = error instanceof Error ? error.message : "Generation failed";
         commitCards((previous) =>
@@ -1365,6 +1580,7 @@ export function KnowledgeWorkspace() {
               : item
           )
         );
+        syncCardMetadata(cardId);
         setPageError(message);
       }
     } finally {
@@ -1415,6 +1631,7 @@ export function KnowledgeWorkspace() {
     setSpawnDraft(null);
     setSpawnError("");
     window.requestAnimationFrame(() => composerTextareaRef.current?.focus());
+    syncCreateKnowledgeCard(root);
   };
 
   // Shared by both the two-step branch modal (spawnCard, below — used when
@@ -1462,6 +1679,7 @@ export function KnowledgeWorkspace() {
       // explicit, opt-in click on the size-toggle button.
       setExpandedCardId(null);
       setActiveCardId(child.id);
+      syncCreateKnowledgeCard(child);
       void askCard(child.id, question, draft.presetKnowledgeSources);
     } catch (error) {
       setSpawnError(
@@ -1521,8 +1739,12 @@ export function KnowledgeWorkspace() {
     setPageError("");
     try {
       for (const card of targets) {
-        if (!card.threadId) continue;
-        const response = await fetch(`/api/threads/${card.threadId}`, {
+        // Deletes the knowledge_cards row and cascades to its own thread
+        // (and that thread's messages/learning state) server-side — see
+        // supabaseDb.deleteKnowledgeCard. A 404 just means this card was
+        // never synced to the server (e.g. the built-in starter card, or a
+        // card created before this device started syncing), which is fine.
+        const response = await fetch(`/api/knowledge-cards/${card.id}`, {
           method: "DELETE",
         });
         if (!response.ok && response.status !== 404) {

@@ -77,8 +77,12 @@ export async function POST(req: Request) {
 
     const title = typeof body.title === "string" ? body.title.trim() : "";
     const question = typeof body.question === "string" ? body.question : "";
+    // Client-generated card id, passed through so this row lands under the
+    // exact same id the sidebar already shows it under (see createKnowledgeCard).
+    const id = typeof body.id === "string" && body.id.trim() ? body.id.trim() : undefined;
 
     const card = await supabaseDb.createKnowledgeCard({
+      id,
       userId: session.id,
       threadId,
       parentId,

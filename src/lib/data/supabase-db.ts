@@ -455,18 +455,25 @@ export const supabaseDb = {
     return fromDatabaseRow<KnowledgeCardRecord>(data);
   },
 
+  // Accepts an optional client-supplied id: the client generates the card's
+  // id locally at creation time (same instant it appears in the sidebar),
+  // and this call syncs it to the server under that *same* id so later
+  // reconcile fetches can match local ↔ remote cards by id instead of ever
+  // producing a duplicate. `upsert` (not `insert`) makes a retried sync
+  // request for the same id a no-op rather than a primary-key error.
   async createKnowledgeCard(
-    payload: Omit<KnowledgeCardRecord, "id" | "createdAt" | "updatedAt">
+    payload: Omit<KnowledgeCardRecord, "id" | "createdAt" | "updatedAt"> & { id?: string }
   ): Promise<KnowledgeCardRecord> {
     const supabase = await sc();
     const now = nowIso();
+    const { id: providedId, ...rest } = payload;
     const card: KnowledgeCardRecord = {
-      id: createId("card"),
+      id: providedId || createId("card"),
       createdAt: now,
       updatedAt: now,
-      ...payload,
+      ...rest,
     };
-    const { error } = await supabase.from("knowledge_cards").insert(toDatabaseRow(card));
+    const { error } = await supabase.from("knowledge_cards").upsert(toDatabaseRow(card));
     assertNoError(error, "Failed to create knowledge card");
     return card;
   },
