@@ -6387,32 +6387,6 @@ a {
   background: rgba(185, 79, 69, 0.09);
 }
 
-/* "+" next to the "对话/Chats" header — opens the new-folder modal. Sits in
-   the same header row as the section label/count, so it reuses that row's
-   grid rather than needing its own layout. */
-.knowledge-stage-projects > div {
-  grid-template-columns: 20px minmax(0, 1fr) auto auto;
-}
-
-.knowledge-stage-projects-add {
-  display: grid;
-  width: 18px;
-  height: 18px;
-  place-items: center;
-  padding: 0;
-  border: 0;
-  border-radius: 6px;
-  color: var(--stage-muted);
-  background: transparent;
-  cursor: pointer;
-  transition: 150ms ease;
-}
-
-.knowledge-stage-projects-add:hover {
-  color: var(--stage-accent);
-  background: rgba(255, 255, 255, 0.62);
-}
-
 /* A per-card row gets a 3rd column only once at least one folder exists
    (the move-to-folder button) — the 2-column layout above stays the exact
    original shape for a workspace with zero folders. */

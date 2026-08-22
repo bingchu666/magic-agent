@@ -2124,6 +2124,15 @@ export function KnowledgeWorkspace() {
           <Plus size={21} />
           <span>{locale === "zh" ? "新建项目" : "New project"}</span>
         </button>
+        <button
+          type="button"
+          onClick={() => openCreateFolderModal()}
+          title={locale === "zh" ? "新建文件夹" : "New folder"}
+          aria-label={locale === "zh" ? "新建文件夹" : "New folder"}
+        >
+          <FolderIcon size={20} />
+          <span>{locale === "zh" ? "新建文件夹" : "New folder"}</span>
+        </button>
         <Link href="/files" title={locale === "zh" ? "上传文档" : "Upload documents"} aria-label={locale === "zh" ? "上传文档" : "Upload documents"}>
           <FileUp size={20} />
           <span>{locale === "zh" ? "上传文档" : "Upload documents"}</span>
@@ -2138,15 +2147,6 @@ export function KnowledgeWorkspace() {
             <Network size={14} />
             <span>{locale === "zh" ? "对话" : "Chats"}</span>
             <i>{sidebarRootCards.length}</i>
-            <button
-              type="button"
-              className="knowledge-stage-projects-add"
-              onClick={() => openCreateFolderModal()}
-              aria-label={locale === "zh" ? "新建文件夹" : "New folder"}
-              title={locale === "zh" ? "新建文件夹" : "New folder"}
-            >
-              <Plus size={12} />
-            </button>
           </div>
           <nav>
             {folders.length === 0
