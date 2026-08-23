@@ -379,6 +379,9 @@ function KnowledgeCardConversation({
   bodyRef,
   locale,
   compact = false,
+  onQuickAsk,
+  messageSuggestions = {},
+  suggestionsLoading = {},
 }: {
   card: KnowledgeCard;
   onTerm: (term: string) => void;
@@ -386,6 +389,9 @@ function KnowledgeCardConversation({
   bodyRef?: Ref<HTMLDivElement>;
   locale: Locale;
   compact?: boolean;
+  onQuickAsk?: (question: string) => void;
+  messageSuggestions?: Record<string, string[]>; 
+  suggestionsLoading?: Record<string, boolean>; 
 }) {
   const zh = locale === "zh";
   const captureSelection = (container: HTMLElement) => {
@@ -465,6 +471,42 @@ function KnowledgeCardConversation({
               onTerm={onTerm}
               locale={locale}
             />
+
+            {/* 建议问题气泡 - 垂直排列 */}
+            {card.messages.filter(m => m.role === "assistant").pop()?.id === message.id && 
+            message.content && card.status !== "streaming" && (
+              <div className="mt-3 pt-2 border-t border-gray-200/60">
+                <div className="flex items-center gap-1.5 text-xs text-gray-400 mb-1.5">
+                  <span>💡</span>
+                  <span>{zh ? "继续提问" : "Continue asking"}</span>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  {suggestionsLoading[message.id] ? (
+                    // 加载中：显示占位文字
+                    <div className="text-sm text-gray-400 px-3.5 py-1.5">
+                      {zh ? "正在生成建议问题..." : "Generating suggestions..."}
+                    </div>
+                  ) : (messageSuggestions[message.id] || []).length > 0 ? (
+                    // 有建议问题：显示动态生成的问题
+                    (messageSuggestions[message.id] || []).map((q, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => onQuickAsk?.(q)}
+                        className="text-left text-sm px-3.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 
+                                  rounded-full border border-emerald-200 text-emerald-800 
+                                  transition-all hover:shadow-sm"
+                      >
+                        {q}
+                      </button>
+                    ))
+                  ) : (
+                    // 没有建议问题：什么都不显示
+                    <></>
+                  )}
+                </div>
+              </div>
+            )}
+
             {message.groundingChecked ? (
               message.knowledgeSources?.length ? (
                 <div className="knowledge-stage-grounding is-hit">
@@ -502,6 +544,10 @@ export function KnowledgeWorkspace() {
   const [cardInputs, setCardInputs] = useState<Record<string, string>>({});
   const [cardSelectionContexts, setCardSelectionContexts] = useState<Record<string, string>>({});
   const [files, setFiles] = useState<FileAsset[]>([]);
+  // 存储每个 assistant 消息 id 对应的建议问题列表
+  const [messageSuggestions, setMessageSuggestions] = useState<Record<string, string[]>>({});
+  // 存储每个 assistant 消息 id 对应的加载状态
+  const [suggestionsLoading, setSuggestionsLoading] = useState<Record<string, boolean>>({});
   const [cardAttachmentIds, setCardAttachmentIds] = useState<Record<string, string[]>>({});
   const [pendingUploads, setPendingUploads] = useState<PendingKnowledgeUpload[]>([]);
   const [uploadingFiles, setUploadingFiles] = useState(false);
@@ -873,6 +919,8 @@ export function KnowledgeWorkspace() {
     [activeProjectCards, cards, locale, relationMeta]
   );
 
+  //控制页面自由or自动翻滚
+  /*
   useEffect(() => {
     if (!activeCard || activeCard.status !== "streaming") return;
     cardBodyRef.current?.scrollTo({
@@ -880,6 +928,7 @@ export function KnowledgeWorkspace() {
       behavior: "smooth",
     });
   }, [activeCard, activeCard?.messages]);
+  */
 
   const focusCard = (cardId: string) => {
     commitCards((previous) =>
@@ -1293,6 +1342,10 @@ export function KnowledgeWorkspace() {
                 : item
             )
           );
+          // 👇 新增：AI 回复完成后，生成建议问题
+          requestAnimationFrame(() => {
+            fetchSuggestions(cardId, assistantId);
+          });
         },
         error: ({ message }) => {
           if (!isCurrentGeneration()) return;
@@ -1560,6 +1613,55 @@ export function KnowledgeWorkspace() {
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1400);
   };
+  
+    // 处理点击建议问题
+  const handleQuickAsk = (question: string) => {
+    // 方式A：填入输入框（推荐，用户可修改后发送）
+    // setCardInputs((prev) => ({ ...prev, [activeCard.id]: question }));
+    // 方式B：直接发送（取消注释即可）
+    void askCard(activeCard.id, question);
+  };
+
+  // 获取建议问题（根据对话历史动态生成）
+  const fetchSuggestions = async (cardId: string, messageId: string) => {
+    // 获取当前卡片的历史消息
+    const history = historyForCard(cardsRef.current, cardId);
+    
+    // 👇 优化：只取最近 4 条消息（2 轮对话），并截断长文本
+    const recentHistory = history.slice(-4).map(msg => ({
+      ...msg,
+      content: msg.content.length > 300 ? msg.content.slice(0, 300) + '...' : msg.content
+    }));
+
+    // 如果对话少于 2 条，不生成建议
+    if (recentHistory.length < 2) {
+      return;
+    }
+
+    setSuggestionsLoading((prev) => ({ ...prev, [messageId]: true }));
+
+    try {
+      const response = await fetch("/api/chat/suggestions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: recentHistory,
+          locale,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to fetch suggestions");
+      }
+
+      const data = (await response.json()) as { questions: string[] };
+      setMessageSuggestions((prev) => ({ ...prev, [messageId]: data.questions }));
+    } catch (error) {
+      console.warn("Failed to generate suggestions", error);
+    } finally {
+      setSuggestionsLoading((prev) => ({ ...prev, [messageId]: false }));
+    }
+  };
 
   return (
     <div className={`knowledge-stage ${sidebarOpen ? "is-sidebar-open" : ""}`}>
@@ -1757,6 +1859,9 @@ export function KnowledgeWorkspace() {
                 }
                 bodyRef={parentCard ? undefined : cardBodyRef}
                 locale={locale}
+                onQuickAsk={handleQuickAsk}
+                messageSuggestions={messageSuggestions} 
+                suggestionsLoading={suggestionsLoading} 
               />
               {!parentCard && nextCard ? (
                 <button
@@ -1881,6 +1986,9 @@ export function KnowledgeWorkspace() {
                 bodyRef={cardBodyRef}
                 locale={locale}
                 compact={!childExpanded}
+                onQuickAsk={handleQuickAsk}
+                messageSuggestions={messageSuggestions} 
+                suggestionsLoading={suggestionsLoading}  
               />
               <button
                 type="button"
