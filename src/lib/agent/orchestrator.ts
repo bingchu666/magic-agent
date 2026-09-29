@@ -98,7 +98,20 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
   output: AgentOutput;
 }> {
   const requestedLocale: Locale = input.locale === "en" ? "en" : "zh";
-  const locale: Locale = detectReplyLocale(input.userMessage, requestedLocale);
+  const quotedText = input.quotedText?.trim() || undefined;
+  // The client used to merge the quoted passage into `userMessage` itself
+  // before sending it; that merge now happens here instead, so `content`
+  // stored on the user's message row can stay the clean question while
+  // every prompt-facing / retrieval-facing use below still sees the exact
+  // same combined text the model (and the knowledge-base matchers) always
+  // saw. Templated on `requestedLocale` — the UI's locale at send time —
+  // matching what the client used to pick between the two.
+  const promptMessage = quotedText
+    ? requestedLocale === "zh"
+      ? `引用内容：“${quotedText}”\n\n针对这段内容的问题：${input.userMessage}`
+      : `Quoted passage: “${quotedText}”\n\nQuestion about this passage: ${input.userMessage}`
+    : input.userMessage;
+  const locale: Locale = detectReplyLocale(promptMessage, requestedLocale);
 
   // The route has already authenticated the session and loaded its trusted
   // profile. Avoid repeating that database read on every chat turn.
@@ -113,7 +126,7 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
     ? requestedThread
     : await supabaseDb.createThread(
       input.userId,
-      naiveTitleFallback(input.userMessage, locale),
+      naiveTitleFallback(promptMessage, locale),
       { titlePending: true }
     );
 
@@ -123,7 +136,7 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
   if (input.onThreadReady) input.onThreadReady(thread.id, thread.title);
 
   const titleUpgradePromise: Promise<void> = thread.titlePending
-    ? generateShortTitle({ userMessage: input.userMessage, locale })
+    ? generateShortTitle({ userMessage: promptMessage, locale })
         .then(async (generatedTitle) => {
           const finalTitle = generatedTitle || thread.title;
           await supabaseDb.updateThreadTitle(thread.id, finalTitle);
@@ -138,17 +151,17 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
         })
     : Promise.resolve();
 
-  const intent = detectIntent(input.userMessage);
+  const intent = detectIntent(promptMessage);
   const safety = { mode: "allow" as const };
   const clientHistory = removeDuplicateCurrentUserTurn(
     normalizeChatHistory(input.clientHistory),
-    input.userMessage
+    promptMessage
   );
   const context = await buildContext({
     threadId: thread.id,
     userId: input.userId,
     locale: requestedLocale,
-    userMessage: input.userMessage,
+    userMessage: promptMessage,
     attachmentIds: input.attachmentIds,
     clientHistory,
     presetKnowledgeSources: input.presetKnowledgeSources,
@@ -168,11 +181,12 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
     content: input.userMessage,
     locale: requestedLocale,
     attachmentIds: input.attachmentIds,
+    quotedText,
   });
 
-  const requestedPoint = parseRequestedPoint(input.userMessage);
+  const requestedPoint = parseRequestedPoint(promptMessage);
   const continuationTarget = extractPointSegment(previousAssistantReply, requestedPoint);
-  const followUp = isExplicitFollowUp(input.userMessage);
+  const followUp = isExplicitFollowUp(promptMessage);
   const responseFormatInstructions = [
     input.responseMode === "annotated"
       ? "Mark 3 to 6 concrete, useful concepts that a learner may want to inspect next by wrapping only the exact term in double square brackets, for example [[misdirection]]. Keep the markers inline inside the natural answer. Do not explain the marker syntax, do not put full sentences inside markers, and do not mark generic words."
@@ -187,7 +201,7 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
   const generationInput = {
     locale,
     intent,
-    userMessage: input.userMessage,
+    userMessage: promptMessage,
     history,
     fileContext: context.fileContext,
     retrievedKnowledge: context.retrievedKnowledge,
@@ -235,6 +249,13 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
     role: "assistant",
     content: output.text,
     locale,
+    // Every completed turn ran the same knowledge-base grounding check the
+    // client always displayed a badge for — `knowledgeSources` (possibly
+    // empty) is what tells a hit from a miss, mirroring the client's own
+    // `groundingChecked: true` + `knowledgeSources` pairing on every `done`
+    // event (see KnowledgeWorkspace.tsx).
+    groundingChecked: true,
+    knowledgeSources: output.knowledgeSources,
   });
 
   await supabaseDb.createEvent({

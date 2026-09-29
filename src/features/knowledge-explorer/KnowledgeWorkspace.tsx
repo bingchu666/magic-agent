@@ -11,6 +11,7 @@ import {
   ChevronRight,
   Copy,
   FileUp,
+  Folder as FolderIcon,
   GitBranch,
   Home,
   Loader2,
@@ -19,6 +20,7 @@ import {
   Network,
   Paperclip,
   PanelLeft,
+  Pencil,
   Plus,
   Send,
   Settings,
@@ -44,7 +46,16 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useSession } from "@/features/auth/session.client";
 import { consumeSseStream } from "@/features/chat-agent/sse";
-import { ChatHistoryMessage, FileAsset, KnowledgeSourceRef, Locale, Thread } from "@/lib/domain/types";
+import {
+  ChatHistoryMessage,
+  FileAsset,
+  Folder,
+  KnowledgeCardRecord,
+  KnowledgeSourceRef,
+  Locale,
+  Message,
+  Thread,
+} from "@/lib/domain/types";
 import { createId } from "@/lib/domain/utils";
 import { MiniTreeMap, type MiniTreeNode } from "@/lib/ui/MiniTreeMap";
 import {
@@ -74,6 +85,11 @@ type KnowledgeCard = {
   id: string;
   threadId?: string;
   parentId: string | null;
+  // Only meaningful on root cards (relation === "root") — mirrors the DB
+  // CHECK constraint. Populated by the server reconcile; no UI reads it yet
+  // (that's Phase C's folders sidebar), but the field ships now so that
+  // phase doesn't need another data-shape migration.
+  folderId?: string | null;
   relation: CardRelation;
   title: string;
   question: string;
@@ -428,6 +444,269 @@ function RelationIcon({ relation }: { relation: CardRelation }) {
   return <Home size={16} />;
 }
 
+// Pinned row for one folder in the "对话/Chats" sidebar list, sorted above
+// the flat conversation list — styled like a conversation row (folder icon,
+// name, card count) so it reads as "a pinned item in the same list," not a
+// separate collapsible section. Clicking it opens the dedicated FolderView
+// overlay rather than expanding anything in place.
+function FolderRow({
+  folder,
+  count,
+  locale,
+  onOpen,
+  onRename,
+  onDelete,
+}: {
+  folder: Folder;
+  count: number;
+  locale: Locale;
+  onOpen: () => void;
+  onRename: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div className="is-folder-row">
+      <button
+        type="button"
+        className="knowledge-stage-project-select is-root-project is-folder"
+        onClick={onOpen}
+        aria-label={locale === "zh" ? `打开文件夹：${folder.name}` : `Open folder: ${folder.name}`}
+      >
+        <FolderIcon size={15} />
+        <strong>
+          <span className="knowledge-stage-project-title-text">{folder.name}</span>
+        </strong>
+        <i>{count}</i>
+      </button>
+      <button
+        type="button"
+        className="knowledge-stage-project-delete"
+        onClick={onRename}
+        aria-label={locale === "zh" ? `重命名文件夹：${folder.name}` : `Rename folder: ${folder.name}`}
+        title={locale === "zh" ? "重命名" : "Rename"}
+      >
+        <Pencil size={13} />
+      </button>
+      <button
+        type="button"
+        className="knowledge-stage-project-delete"
+        onClick={onDelete}
+        aria-label={locale === "zh" ? `删除文件夹：${folder.name}` : `Delete folder: ${folder.name}`}
+        title={locale === "zh" ? "删除文件夹" : "Delete folder"}
+      >
+        <Trash2 size={13} />
+      </button>
+    </div>
+  );
+}
+
+// One row in the sidebar's root-card list — identical markup whether it's
+// rendered in the sidebar's flat list or inside the FolderView overlay. The
+// move-to-folder control only appears once at least one folder exists
+// (showMoveMenu), which is what keeps the zero-folder case pixel-identical
+// to the sidebar's original flat list.
+function CardRow({
+  card,
+  isActive,
+  locale,
+  folders,
+  showMoveMenu,
+  moveMenuOpen,
+  onOpen,
+  onDelete,
+  onToggleMoveMenu,
+  onMoveToFolder,
+  onCreateFolderForCard,
+}: {
+  card: KnowledgeCard;
+  isActive: boolean;
+  locale: Locale;
+  folders: Folder[];
+  showMoveMenu: boolean;
+  moveMenuOpen: boolean;
+  onOpen: () => void;
+  onDelete: () => void;
+  onToggleMoveMenu: () => void;
+  onMoveToFolder: (folderId: string | null) => void;
+  onCreateFolderForCard: () => void;
+}) {
+  return (
+    <div className={`${isActive ? "is-active" : ""} ${showMoveMenu ? "has-move" : ""}`}>
+      <button
+        type="button"
+        className="knowledge-stage-project-select is-root-project"
+        onClick={onOpen}
+        aria-label={locale === "zh" ? `打开对话：${card.title}` : `Open: ${card.title}`}
+      >
+        <strong>
+          <span className="knowledge-stage-project-title-text">{card.title}</span>
+        </strong>
+      </button>
+      {showMoveMenu ? (
+        <div className="knowledge-stage-move-wrap">
+          <button
+            type="button"
+            className={moveMenuOpen ? "is-open" : ""}
+            onClick={onToggleMoveMenu}
+            aria-label={locale === "zh" ? `移动到文件夹：${card.title}` : `Move to folder: ${card.title}`}
+            title={locale === "zh" ? "移动到文件夹" : "Move to folder"}
+            aria-expanded={moveMenuOpen}
+            aria-haspopup="menu"
+          >
+            <FolderIcon size={13} />
+          </button>
+          {moveMenuOpen ? (
+            <div className="knowledge-stage-move-menu" role="menu">
+              {folders.map((folder) => (
+                <button
+                  key={folder.id}
+                  type="button"
+                  role="menuitem"
+                  className={card.folderId === folder.id ? "is-current" : ""}
+                  onClick={() => onMoveToFolder(folder.id)}
+                >
+                  <FolderIcon size={13} />
+                  <span>{folder.name}</span>
+                </button>
+              ))}
+              {card.folderId ? (
+                <button type="button" role="menuitem" onClick={() => onMoveToFolder(null)}>
+                  <X size={13} />
+                  <span>{locale === "zh" ? "移出文件夹" : "Remove from folder"}</span>
+                </button>
+              ) : null}
+              <button type="button" role="menuitem" className="is-create" onClick={onCreateFolderForCard}>
+                <Plus size={13} />
+                <span>{locale === "zh" ? "新建文件夹" : "New folder"}</span>
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      <button
+        type="button"
+        className="knowledge-stage-project-delete"
+        onClick={onDelete}
+        aria-label={locale === "zh" ? `删除对话：${card.title}` : `Delete: ${card.title}`}
+        title={locale === "zh" ? "删除对话" : "Delete"}
+      >
+        <Trash2 size={13} />
+      </button>
+    </div>
+  );
+}
+
+// Dedicated overlay shown when a folder row is clicked — a separate view for
+// that folder's cards, modeled on `KnowledgeControlCenter`'s panel structure.
+// The sidebar itself never expands in place; this is the only way into a
+// folder's contents.
+function FolderView({
+  folder,
+  cards,
+  activeCardId,
+  locale,
+  folders,
+  moveMenuCardId,
+  onClose,
+  onRename,
+  onDelete,
+  onOpenCard,
+  onDeleteCard,
+  onToggleMoveMenu,
+  onMoveToFolder,
+  onCreateFolderForCard,
+}: {
+  folder: Folder;
+  cards: KnowledgeCard[];
+  activeCardId: string | undefined;
+  locale: Locale;
+  folders: Folder[];
+  moveMenuCardId: string | null;
+  onClose: () => void;
+  onRename: () => void;
+  onDelete: () => void;
+  onOpenCard: (cardId: string) => void;
+  onDeleteCard: (cardId: string) => void;
+  onToggleMoveMenu: (cardId: string) => void;
+  onMoveToFolder: (cardId: string, folderId: string | null) => void;
+  onCreateFolderForCard: (cardId: string) => void;
+}) {
+  return (
+    <div className="knowledge-folder-view-backdrop" onClick={onClose}>
+      <div className="knowledge-folder-view" onClick={(event) => event.stopPropagation()}>
+        <header>
+          <div>
+            <div className="knowledge-folder-view-icon">
+              <FolderIcon size={18} />
+            </div>
+            <div>
+              <small>{locale === "zh" ? "文件夹" : "Folder"}</small>
+              <h2>{folder.name}</h2>
+            </div>
+          </div>
+          <div className="knowledge-folder-view-actions">
+            <button
+              type="button"
+              onClick={onRename}
+              aria-label={locale === "zh" ? "重命名文件夹" : "Rename folder"}
+              title={locale === "zh" ? "重命名" : "Rename"}
+            >
+              <Pencil size={15} />
+            </button>
+            <button
+              type="button"
+              onClick={onDelete}
+              aria-label={locale === "zh" ? "删除文件夹" : "Delete folder"}
+              title={locale === "zh" ? "删除文件夹" : "Delete folder"}
+            >
+              <Trash2 size={15} />
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label={locale === "zh" ? "关闭" : "Close"}
+              title={locale === "zh" ? "关闭" : "Close"}
+            >
+              <X size={15} />
+            </button>
+          </div>
+        </header>
+        <div className="knowledge-folder-view-body">
+          {cards.length === 0 ? (
+            <div className="knowledge-folder-view-empty">
+              <FolderIcon size={28} />
+              <p>
+                {locale === "zh"
+                  ? "这个文件夹还是空的。可以在对话列表里点击移动图标，把对话移进来。"
+                  : "This folder is empty. Use a card's move icon in the chat list to add one."}
+              </p>
+            </div>
+          ) : (
+            <nav className="knowledge-card-row-list">
+              {cards.map((card) => (
+                <CardRow
+                  key={card.id}
+                  card={card}
+                  isActive={card.id === activeCardId}
+                  locale={locale}
+                  folders={folders}
+                  showMoveMenu
+                  moveMenuOpen={moveMenuCardId === card.id}
+                  onOpen={() => onOpenCard(card.id)}
+                  onDelete={() => onDeleteCard(card.id)}
+                  onToggleMoveMenu={() => onToggleMoveMenu(card.id)}
+                  onMoveToFolder={(folderId) => onMoveToFolder(card.id, folderId)}
+                  onCreateFolderForCard={() => onCreateFolderForCard(card.id)}
+                />
+              ))}
+            </nav>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function KnowledgeCardConversation({
   card,
   onTerm,
@@ -581,6 +860,20 @@ export function KnowledgeWorkspace() {
   const [copied, setCopied] = useState(false);
   const [pageError, setPageError] = useState("");
   const [hydrated, setHydrated] = useState(false);
+  // Populated by the background server-reconcile effect below.
+  const [folders, setFolders] = useState<Folder[]>([]);
+  // Id of the folder whose dedicated FolderView overlay is currently open —
+  // null means no overlay. Deliberately not persisted, matching how
+  // `expandedCardId` also always resets rather than remembering state.
+  const [openFolderView, setOpenFolderView] = useState<string | null>(null);
+  const [moveMenuCardId, setMoveMenuCardId] = useState<string | null>(null);
+  const [folderModal, setFolderModal] = useState<
+    { mode: "create"; assignToCardId?: string } | { mode: "rename"; folderId: string } | null
+  >(null);
+  const [folderNameDraft, setFolderNameDraft] = useState("");
+  const [folderModalError, setFolderModalError] = useState("");
+  const [savingFolder, setSavingFolder] = useState(false);
+  const [deleteFolderId, setDeleteFolderId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [expandedCardId, setExpandedCardId] = useState<string | null>(null);
   const [childCardDragPosition, setChildCardDragPosition] = useState<{
@@ -610,6 +903,123 @@ export function KnowledgeWorkspace() {
     const next = typeof update === "function" ? update(cardsRef.current) : update;
     cardsRef.current = next;
     setCards(next);
+  };
+
+  // Fire-and-forget metadata sync to the server — every call site below
+  // already committed the change locally first, so the UI never waits on
+  // this. Failures are swallowed (logged only): the local state stays the
+  // source of truth for this tab, and the next successful sync self-heals
+  // any drift. If the row doesn't exist yet server-side (e.g. the built-in
+  // starter card, or any card created on a device from before this synced
+  // to the server), fall back to creating it instead of losing the update.
+  const syncKnowledgeCardPatch = (
+    cardId: string,
+    patch: Partial<{
+      title: string;
+      question: string;
+      status: "idle" | "error";
+      unread: boolean;
+      threadId: string | null;
+      folderId: string | null;
+    }>
+  ) => {
+    void (async () => {
+      try {
+        const response = await fetch(`/api/knowledge-cards/${cardId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        });
+        if (response.status === 404) {
+          const card = cardsRef.current.find((item) => item.id === cardId);
+          if (card) syncCreateKnowledgeCard(card);
+          return;
+        }
+        if (!response.ok) {
+          console.warn("Failed to sync card update", await response.text().catch(() => ""));
+        }
+      } catch (error) {
+        console.warn("Failed to sync card update", error);
+      }
+    })();
+  };
+
+  // Reads the card's current fields straight off cardsRef (always fresh,
+  // even mid-render) and syncs the metadata columns as a single patch —
+  // shared by every call site so each one doesn't hand-assemble its own
+  // partial payload.
+  const syncCardMetadata = (cardId: string) => {
+    const card = cardsRef.current.find((item) => item.id === cardId);
+    if (!card) return;
+    syncKnowledgeCardPatch(cardId, {
+      title: card.title,
+      question: card.question,
+      status: card.status === "streaming" ? undefined : card.status,
+      unread: card.unread,
+      threadId: card.threadId ?? null,
+      folderId: card.folderId ?? null,
+    });
+  };
+
+  const syncCreateKnowledgeCard = (card: KnowledgeCard) => {
+    void apiJson("/api/knowledge-cards", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: card.id,
+        threadId: card.threadId,
+        parentId: card.parentId,
+        folderId: card.folderId,
+        relation: card.relation,
+        title: card.title,
+        question: card.question,
+      }),
+    }).catch((error) => {
+      console.warn("Failed to sync new card to server", error);
+    });
+  };
+
+  // Cross-device message hydration: a card synced in by the reconcile
+  // effect below arrives with metadata only (title, tree position, etc) —
+  // its message history lives in threads/messages and has to be fetched
+  // separately. Guarded so it only ever fills a genuinely empty card, and
+  // the commit itself re-checks message length at apply time (not just at
+  // call time) so it can never clobber messages askCard already streamed
+  // in while this fetch was in flight.
+  const hydrateCardMessages = async (card: KnowledgeCard) => {
+    if (!card.threadId || card.messages.length > 0) return;
+    try {
+      const data = await apiJson<{ items: Message[] }>(`/api/threads/${card.threadId}/messages`);
+      if (data.items.length === 0) return;
+      const mapped: KnowledgeMessage[] = data.items
+        .filter((message) => message.role === "user" || message.role === "assistant")
+        .map((message) => ({
+          id: message.id,
+          role: message.role as "user" | "assistant",
+          content: message.content,
+          quotedText: message.quotedText || undefined,
+          attachments: (message.attachmentIds ?? [])
+            .map((fileId) => files.find((file) => file.id === fileId))
+            .filter((file): file is FileAsset => Boolean(file))
+            .map((file) => ({
+              id: file.id,
+              fileName: file.fileName,
+              mimeType: file.mimeType,
+              size: file.size,
+            })),
+          groundingChecked: message.groundingChecked || undefined,
+          knowledgeSources: message.knowledgeSources,
+        }));
+      commitCards((previous) =>
+        previous.map((item) =>
+          item.id === card.id && item.messages.length === 0
+            ? { ...item, messages: mapped }
+            : item
+        )
+      );
+    } catch (error) {
+      console.warn("Failed to hydrate card messages", error);
+    }
   };
 
   const loadFiles = async () => {
@@ -709,6 +1119,30 @@ export function KnowledgeWorkspace() {
   }, [uploadMenuOpen]);
 
   useEffect(() => {
+    if (!moveMenuCardId) return;
+
+    // Matched by class rather than a ref (unlike the upload menu above)
+    // because this menu can open from any card row in the sidebar list —
+    // a single ref can't follow whichever row is currently open.
+    const closeMenu = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target?.closest?.(".knowledge-stage-move-wrap")) {
+        setMoveMenuCardId(null);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMoveMenuCardId(null);
+    };
+
+    document.addEventListener("pointerdown", closeMenu);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeMenu);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [moveMenuCardId]);
+
+  useEffect(() => {
     try {
       const raw = window.localStorage.getItem(STORAGE_KEY);
       if (raw) {
@@ -786,6 +1220,67 @@ export function KnowledgeWorkspace() {
     );
   }, [hydrated, sidebarOpen]);
 
+  // Background server reconcile — runs once per login, after the
+  // instant-first-paint localStorage hydrate above already ran. Local-first,
+  // not a replace: merges only tree/UI metadata (never .messages, never the
+  // ephemeral "streaming" status) into cards that already exist locally by
+  // id, and appends any card the server knows about that this browser
+  // doesn't yet (e.g. created on another device). A card that exists only
+  // locally and was never synced is left alone here — it starts syncing
+  // forward the next time one of the mutation call sites touches it.
+  useEffect(() => {
+    if (!hydrated || !user?.id) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [folderData, cardData] = await Promise.all([
+          apiJson<{ items: Folder[] }>("/api/folders"),
+          apiJson<{ items: KnowledgeCardRecord[] }>("/api/knowledge-cards"),
+        ]);
+        if (cancelled) return;
+        setFolders(folderData.items);
+
+        commitCards((previous) => {
+          const localIds = new Set(previous.map((card) => card.id));
+          const merged = previous.map((card) => {
+            const remote = cardData.items.find((item) => item.id === card.id);
+            if (!remote) return card;
+            return {
+              ...card,
+              title: remote.title || card.title,
+              unread: remote.unread,
+              folderId: remote.folderId,
+              parentId: remote.parentId,
+              relation: remote.relation,
+              threadId: remote.threadId ?? card.threadId,
+            };
+          });
+          const additions: KnowledgeCard[] = cardData.items
+            .filter((remote) => !localIds.has(remote.id))
+            .map((remote) => ({
+              id: remote.id,
+              threadId: remote.threadId ?? undefined,
+              parentId: remote.parentId,
+              folderId: remote.folderId,
+              relation: remote.relation,
+              title: remote.title,
+              question: remote.question,
+              messages: [],
+              status: remote.status,
+              unread: remote.unread,
+              createdAt: remote.createdAt,
+            }));
+          return additions.length > 0 ? [...merged, ...additions] : merged;
+        });
+      } catch (error) {
+        console.warn("Failed to sync folders/knowledge cards from server", error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [hydrated, user?.id]);
+
   const activeCard = cards.find((card) => card.id === activeCardId) ?? cards[0];
   // A freshly spawned child/related/branch card starts with zero messages
   // (the very first starter card always ships with one, so this never fires
@@ -813,6 +1308,20 @@ export function KnowledgeWorkspace() {
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
     [cards]
   );
+  const cardsByFolder = useMemo(() => {
+    const byFolder = new Map<string, KnowledgeCard[]>();
+    const unfiled: KnowledgeCard[] = [];
+    for (const card of sidebarRootCards) {
+      if (card.folderId) {
+        const list = byFolder.get(card.folderId);
+        if (list) list.push(card);
+        else byFolder.set(card.folderId, [card]);
+      } else {
+        unfiled.push(card);
+      }
+    }
+    return { byFolder, unfiled };
+  }, [sidebarRootCards]);
   const nextCard = activeCard
     ? [...cards]
         .filter((card) => card.parentId === activeCard.id)
@@ -836,6 +1345,23 @@ export function KnowledgeWorkspace() {
   const activeSelectionContext = activeCard
     ? cardSelectionContexts[activeCard.id] ?? ""
     : "";
+
+  useEffect(() => {
+    // Covers both "opened on a new device" (the card just arrived via the
+    // reconcile effect above with metadata only) and "focused any card that
+    // still has no messages but does have a real thread" — e.g. self-healing
+    // local data that lost its messages. A card with no threadId yet (never
+    // asked anything) is correctly left alone; there's nothing to fetch.
+    if (!activeCard || !activeCard.threadId || activeCard.messages.length > 0) return;
+    void hydrateCardMessages(activeCard);
+    // Deliberately narrow deps: these three primitives are exactly the
+    // guard condition above, so the effect only re-fires when one actually
+    // changes. Listing the whole `activeCard` object (a new reference every
+    // render) or `hydrateCardMessages` (recreated every render, always
+    // closes over current state) would refire this mid-fetch on unrelated
+    // re-renders and issue duplicate concurrent hydration requests.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeCard?.id, activeCard?.threadId, activeCard?.messages.length]);
 
   useEffect(() => {
     // Dragging is only remembered for as long as this card stays open —
@@ -1035,6 +1561,7 @@ export function KnowledgeWorkspace() {
         item.id === card.id ? { ...item, threadId: thread.id, title: thread.title } : item
       )
     );
+    syncCardMetadata(card.id);
     return thread.id;
   };
 
@@ -1292,11 +1819,12 @@ export function KnowledgeWorkspace() {
         signal: abortController.signal,
         body: JSON.stringify({
           threadId: current?.threadId,
-          userMessage: quotedText
-            ? locale === "zh"
-              ? `引用内容：“${quotedText}”\n\n针对这段内容的问题：${normalized}`
-              : `Quoted passage: “${quotedText}”\n\nQuestion about this passage: ${normalized}`
-            : normalized,
+          // The server now reassembles the same "quoted passage + question"
+          // prompt it always sent the model — sending the clean question and
+          // quotedText separately lets the stored message content stay clean
+          // instead of permanently baking the quoted-passage boilerplate in.
+          userMessage: normalized,
+          quotedText: quotedText || undefined,
           locale,
           attachmentIds: attachmentIdsForMessage,
           clientHistory: history,
@@ -1321,6 +1849,7 @@ export function KnowledgeWorkspace() {
               item.id === cardId ? { ...item, threadId, title: title || item.title } : item
             )
           );
+          syncCardMetadata(cardId);
         },
         token: ({ text }) => {
           if (!isCurrentGeneration()) return;
@@ -1382,6 +1911,7 @@ export function KnowledgeWorkspace() {
             : item
         )
       );
+      syncCardMetadata(cardId);
     } catch (error) {
       const isUserAbort =
         abortController.signal.aborted ||
@@ -1411,6 +1941,7 @@ export function KnowledgeWorkspace() {
               : item
           )
         );
+        syncCardMetadata(cardId);
       } else {
         const message = error instanceof Error ? error.message : "Generation failed";
         commitCards((previous) =>
@@ -1434,6 +1965,7 @@ export function KnowledgeWorkspace() {
               : item
           )
         );
+        syncCardMetadata(cardId);
         setPageError(message);
       }
     } finally {
@@ -1484,6 +2016,7 @@ export function KnowledgeWorkspace() {
     setSpawnDraft(null);
     setSpawnError("");
     window.requestAnimationFrame(() => composerTextareaRef.current?.focus());
+    syncCreateKnowledgeCard(root);
   };
 
   // Shared by both the two-step branch modal (spawnCard, below — used when
@@ -1531,6 +2064,7 @@ export function KnowledgeWorkspace() {
       // explicit, opt-in click on the size-toggle button.
       setExpandedCardId(null);
       setActiveCardId(child.id);
+      syncCreateKnowledgeCard(child);
       void askCard(child.id, question, draft.presetKnowledgeSources);
     } catch (error) {
       setSpawnError(
@@ -1590,8 +2124,12 @@ export function KnowledgeWorkspace() {
     setPageError("");
     try {
       for (const card of targets) {
-        if (!card.threadId) continue;
-        const response = await fetch(`/api/threads/${card.threadId}`, {
+        // Deletes the knowledge_cards row and cascades to its own thread
+        // (and that thread's messages/learning state) server-side — see
+        // supabaseDb.deleteKnowledgeCard. A 404 just means this card was
+        // never synced to the server (e.g. the built-in starter card, or a
+        // card created before this device started syncing), which is fine.
+        const response = await fetch(`/api/knowledge-cards/${card.id}`, {
           method: "DELETE",
         });
         if (!response.ok && response.status !== 404) {
@@ -1619,6 +2157,104 @@ export function KnowledgeWorkspace() {
       );
     } finally {
       setCreatingCard(false);
+    }
+  };
+
+  // `assignToCardId` is set when this modal was opened from a card's move-
+  // to-folder menu ("新建文件夹") — on success the new folder is assigned to
+  // that card in the same flow, mirroring the same affordance in Claude.ai.
+  const openCreateFolderModal = (assignToCardId?: string) => {
+    setFolderModal({ mode: "create", assignToCardId });
+    setFolderNameDraft("");
+    setFolderModalError("");
+    setMoveMenuCardId(null);
+  };
+
+  const openRenameFolderModal = (folder: Folder) => {
+    setFolderModal({ mode: "rename", folderId: folder.id });
+    setFolderNameDraft(folder.name);
+    setFolderModalError("");
+  };
+
+  const moveCardToFolder = (cardId: string, folderId: string | null) => {
+    commitCards((previous) =>
+      previous.map((item) => (item.id === cardId ? { ...item, folderId } : item))
+    );
+    setMoveMenuCardId(null);
+    syncKnowledgeCardPatch(cardId, { folderId });
+  };
+
+  const submitFolderModal = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!folderModal) return;
+    const name = folderNameDraft.trim();
+    if (!name) {
+      setFolderModalError(locale === "zh" ? "请输入文件夹名称" : "Enter a folder name");
+      return;
+    }
+    setSavingFolder(true);
+    setFolderModalError("");
+    try {
+      if (folderModal.mode === "create") {
+        const data = await apiJson<{ item: Folder }>("/api/folders", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        });
+        setFolders((previous) => [...previous, data.item].sort((a, b) => a.sortOrder - b.sortOrder));
+        if (folderModal.assignToCardId) {
+          moveCardToFolder(folderModal.assignToCardId, data.item.id);
+        }
+      } else {
+        const data = await apiJson<{ item: Folder }>(`/api/folders/${folderModal.folderId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        });
+        setFolders((previous) =>
+          previous.map((item) => (item.id === data.item.id ? data.item : item))
+        );
+      }
+      setFolderModal(null);
+    } catch (error) {
+      setFolderModalError(
+        error instanceof Error
+          ? error.message
+          : locale === "zh"
+            ? "保存文件夹失败"
+            : "Failed to save the folder"
+      );
+    } finally {
+      setSavingFolder(false);
+    }
+  };
+
+  // The server unfiles the folder's cards (folder_id -> null) rather than
+  // deleting them — mirrored locally so the sidebar doesn't wait on the
+  // next background reconcile to reflect it.
+  const confirmDeleteFolder = async () => {
+    if (!deleteFolderId) return;
+    setSavingFolder(true);
+    try {
+      await apiJson(`/api/folders/${deleteFolderId}`, { method: "DELETE" });
+      setFolders((previous) => previous.filter((item) => item.id !== deleteFolderId));
+      commitCards((previous) =>
+        previous.map((item) =>
+          item.folderId === deleteFolderId ? { ...item, folderId: null } : item
+        )
+      );
+      if (openFolderView === deleteFolderId) setOpenFolderView(null);
+      setDeleteFolderId(null);
+    } catch (error) {
+      setPageError(
+        error instanceof Error
+          ? error.message
+          : locale === "zh"
+            ? "删除文件夹失败"
+            : "Failed to delete the folder"
+      );
+    } finally {
+      setSavingFolder(false);
     }
   };
 
@@ -1919,6 +2555,15 @@ export function KnowledgeWorkspace() {
           <Plus size={21} />
           <span>{locale === "zh" ? "新建项目" : "New project"}</span>
         </button>
+        <button
+          type="button"
+          onClick={() => openCreateFolderModal()}
+          title={locale === "zh" ? "新建文件夹" : "New folder"}
+          aria-label={locale === "zh" ? "新建文件夹" : "New folder"}
+        >
+          <FolderIcon size={20} />
+          <span>{locale === "zh" ? "新建文件夹" : "New folder"}</span>
+        </button>
         <Link href="/files" title={locale === "zh" ? "上传文档" : "Upload documents"} aria-label={locale === "zh" ? "上传文档" : "Upload documents"}>
           <FileUp size={20} />
           <span>{locale === "zh" ? "上传文档" : "Upload documents"}</span>
@@ -1934,32 +2579,35 @@ export function KnowledgeWorkspace() {
             <span>{locale === "zh" ? "对话" : "Chats"}</span>
             <i>{sidebarRootCards.length}</i>
           </div>
-          <nav>
-            {sidebarRootCards.map((card) => (
-              <div
+          <nav className="knowledge-card-row-list">
+            {folders.map((folder) => (
+              <FolderRow
+                key={folder.id}
+                folder={folder}
+                count={(cardsByFolder.byFolder.get(folder.id) ?? []).length}
+                locale={locale}
+                onOpen={() => setOpenFolderView(folder.id)}
+                onRename={() => openRenameFolderModal(folder)}
+                onDelete={() => setDeleteFolderId(folder.id)}
+              />
+            ))}
+            {cardsByFolder.unfiled.map((card) => (
+              <CardRow
                 key={card.id}
-                className={card.id === activeRootCard?.id ? "is-active" : ""}
-              >
-                <button
-                  type="button"
-                  className="knowledge-stage-project-select is-root-project"
-                  onClick={() => focusCard(card.id)}
-                  aria-label={locale === "zh" ? `打开对话：${card.title}` : `Open: ${card.title}`}
-                >
-                  <strong>
-                    <span className="knowledge-stage-project-title-text">{card.title}</span>
-                  </strong>
-                </button>
-                <button
-                  type="button"
-                  className="knowledge-stage-project-delete"
-                  onClick={() => setDeleteCardId(card.id)}
-                  aria-label={locale === "zh" ? `删除对话：${card.title}` : `Delete: ${card.title}`}
-                  title={locale === "zh" ? "删除对话" : "Delete"}
-                >
-                  <Trash2 size={13} />
-                </button>
-              </div>
+                card={card}
+                isActive={card.id === activeRootCard?.id}
+                locale={locale}
+                folders={folders}
+                showMoveMenu={folders.length > 0}
+                moveMenuOpen={moveMenuCardId === card.id}
+                onOpen={() => focusCard(card.id)}
+                onDelete={() => setDeleteCardId(card.id)}
+                onToggleMoveMenu={() =>
+                  setMoveMenuCardId((current) => (current === card.id ? null : card.id))
+                }
+                onMoveToFolder={(folderId) => moveCardToFolder(card.id, folderId)}
+                onCreateFolderForCard={() => openCreateFolderModal(card.id)}
+              />
             ))}
           </nav>
         </section>
@@ -2479,6 +3127,107 @@ export function KnowledgeWorkspace() {
           </div>
         </div>
       ) : null}
+
+      {folderModal ? (
+        <div className="knowledge-stage-modal-backdrop">
+          <form className="knowledge-stage-modal" onSubmit={submitFolderModal}>
+            <div className="knowledge-stage-modal-icon">
+              <FolderIcon size={19} />
+            </div>
+            <span>
+              {folderModal.mode === "create"
+                ? locale === "zh" ? "新建文件夹" : "New folder"
+                : locale === "zh" ? "重命名文件夹" : "Rename folder"}
+            </span>
+            <h2>
+              {locale === "zh"
+                ? "用于整理侧边栏里的对话卡片"
+                : "Used to organize the conversation cards in your sidebar"}
+            </h2>
+            <input
+              type="text"
+              autoFocus
+              value={folderNameDraft}
+              onChange={(event) => setFolderNameDraft(event.target.value)}
+              placeholder={locale === "zh" ? "文件夹名称" : "Folder name"}
+              maxLength={80}
+            />
+            {folderModalError ? <p className="knowledge-stage-modal-error">{folderModalError}</p> : null}
+            <div>
+              <button type="button" onClick={() => setFolderModal(null)}>
+                {locale === "zh" ? "取消" : "Cancel"}
+              </button>
+              <button type="submit" disabled={!folderNameDraft.trim() || savingFolder}>
+                {savingFolder ? <Loader2 className="animate-spin" size={15} /> : null}
+                {folderModal.mode === "create"
+                  ? locale === "zh" ? "创建" : "Create"
+                  : locale === "zh" ? "保存" : "Save"}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
+      {deleteFolderId ? (
+        <div className="knowledge-stage-modal-backdrop">
+          <div className="knowledge-stage-modal">
+            <div className="knowledge-stage-modal-icon is-danger">
+              <Trash2 size={19} />
+            </div>
+            <span>{locale === "zh" ? "确认操作" : "Confirm action"}</span>
+            <h2>{locale === "zh" ? "删除这个文件夹？" : "Delete this folder?"}</h2>
+            <p className="knowledge-stage-delete-copy">
+              {locale === "zh"
+                ? "文件夹内的对话卡片会移到「未归类」，卡片本身不会被删除。"
+                : "Cards inside will move to “Unfiled” — the cards themselves are not deleted."}
+            </p>
+            <div>
+              <button type="button" onClick={() => setDeleteFolderId(null)}>
+                {locale === "zh" ? "取消" : "Cancel"}
+              </button>
+              <button
+                type="button"
+                className="is-danger"
+                onClick={() => void confirmDeleteFolder()}
+                disabled={savingFolder}
+              >
+                {savingFolder ? <Loader2 className="animate-spin" size={15} /> : null}
+                {locale === "zh" ? "确认删除" : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {openFolderView
+        ? (() => {
+            const folder = folders.find((item) => item.id === openFolderView);
+            if (!folder) return null;
+            return (
+              <FolderView
+                folder={folder}
+                cards={cardsByFolder.byFolder.get(folder.id) ?? []}
+                activeCardId={activeRootCard?.id}
+                locale={locale}
+                folders={folders}
+                moveMenuCardId={moveMenuCardId}
+                onClose={() => setOpenFolderView(null)}
+                onRename={() => openRenameFolderModal(folder)}
+                onDelete={() => setDeleteFolderId(folder.id)}
+                onOpenCard={(cardId) => {
+                  focusCard(cardId);
+                  setOpenFolderView(null);
+                }}
+                onDeleteCard={(cardId) => setDeleteCardId(cardId)}
+                onToggleMoveMenu={(cardId) =>
+                  setMoveMenuCardId((current) => (current === cardId ? null : cardId))
+                }
+                onMoveToFolder={(cardId, folderId) => moveCardToFolder(cardId, folderId)}
+                onCreateFolderForCard={(cardId) => openCreateFolderModal(cardId)}
+              />
+            );
+          })()
+        : null}
 
       {controlCenterMode ? (
         <KnowledgeControlCenter
