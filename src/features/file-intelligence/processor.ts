@@ -32,19 +32,44 @@ function decodeReadableText(buffer: ArrayBuffer) {
 }
 
 async function ocrImage(image: ArrayBuffer | Uint8Array | Buffer) {
-  const { createWorker } = await import("tesseract.js");
-  const worker = await createWorker(["eng", "chi_sim"], 1, { cachePath: tmpdir() });
+  const worker = await createOcrWorker();
   try {
     const bytes = image instanceof ArrayBuffer ? new Uint8Array(image) : image;
-    const result = await worker.recognize(Buffer.from(bytes));
+    const result = await processingTimeout(worker.recognize(Buffer.from(bytes)), 120_000, "OCR recognition");
     return normalizeExtractedText(result.data.text);
   } finally {
     await worker.terminate();
   }
 }
 
+async function processingTimeout<T>(operation: Promise<T>, milliseconds: number, label: string) {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out; retry parsing the file`)), milliseconds);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function createOcrWorker() {
+  const { createWorker } = await import("tesseract.js");
+  console.info("[file-ocr] loading English and Chinese recognition engine");
+  const worker = await processingTimeout(
+    createWorker(["eng", "chi_sim"], 1, { cachePath: tmpdir() }),
+    60_000,
+    "OCR initialization"
+  );
+  console.info("[file-ocr] recognition engine ready");
+  return worker;
+}
+
 async function ocrPdf(buffer: ArrayBuffer, pageNumbers?: number[]): Promise<ExtractedPage[]> {
-  const [{ pdf }, { createScheduler, createWorker }] = await Promise.all([
+  const [{ pdf }, { createScheduler }] = await Promise.all([
     import("pdf-to-img"),
     import("tesseract.js"),
   ]);
@@ -55,9 +80,7 @@ async function ocrPdf(buffer: ArrayBuffer, pageNumbers?: number[]): Promise<Extr
 
   try {
     const workers = await Promise.all(
-      Array.from({ length: workerCount }, () =>
-        createWorker(["eng", "chi_sim"], 1, { cachePath: tmpdir() })
-      )
+      Array.from({ length: workerCount }, () => createOcrWorker())
     );
     workers.forEach((worker) => scheduler.addWorker(worker));
 
