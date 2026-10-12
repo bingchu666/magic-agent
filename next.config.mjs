@@ -9,6 +9,7 @@ const nextConfig = {
     "pdf-to-img",
     "tesseract.js",
     "tesseract.js-core",
+    "mammoth",
   ],
 };
 

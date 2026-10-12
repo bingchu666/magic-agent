@@ -12,6 +12,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ fileId: 
     }
 
     const jobs = await supabaseDb.listFileJobs(file.id);
+    if (new URL(req.url).searchParams.get("statusOnly") === "1") {
+      return jsonOk({ file, jobs });
+    }
     const insights = await supabaseDb.listFileInsightsByIds(session.id, [file.id]);
 
     return jsonOk({
@@ -20,7 +23,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ fileId: 
       insights,
     });
   } catch (error) {
-    return jsonError(error instanceof Error ? error.message : "Unauthorized", 401);
+    const message = error instanceof Error ? error.message : "File lookup failed";
+    return jsonError(message, message === "UNAUTHORIZED" ? 401 : 500);
   }
 }
 

@@ -8057,6 +8057,8 @@ a {
   left: -4px;
   width: min(340px, calc(100vw - 52px));
   padding: 7px;
+  max-height: min(460px, 60vh);
+  overflow-y: auto;
   border: 1px solid rgba(255, 255, 255, 0.86);
   border-radius: 17px;
   background: rgba(250, 252, 250, 0.92);
@@ -8085,6 +8087,18 @@ a {
 
 .knowledge-stage-upload-menu > button:hover {
   background: rgba(221, 237, 228, 0.72);
+}
+
+.knowledge-stage-upload-menu > button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.magic-source-card footer a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--stage-accent, #31584a);
 }
 
 .knowledge-stage-upload-menu > button > span {

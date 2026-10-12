@@ -47,6 +47,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useSession } from "@/features/auth/session.client";
 import { consumeSseStream } from "@/features/chat-agent/sse";
+import { FILE_ACCEPT, FILE_FORMAT_LABEL, documentMimeType, fileValidationError } from "@/features/file-intelligence/file-types";
 import {
   ChatHistoryMessage,
   FileAsset,
@@ -796,7 +797,9 @@ function KnowledgeCardConversation({
               {card.status === "streaming" && !message.content ? (
                 <>
                   <Loader2 className="animate-spin" size={15} />
-                  {zh ? "正在读取上下文与知识库" : "Reading context and knowledge base"}
+                  {message.attachments?.length
+                    ? zh ? "正在阅读上传的书籍" : "Reading your uploaded document"
+                    : zh ? "正在读取上下文与知识库" : "Reading context and knowledge base"}
                 </>
               ) : (
                 <>
@@ -811,7 +814,15 @@ function KnowledgeCardConversation({
               locale={locale}
             />
             {message.groundingChecked ? (
-              message.knowledgeSources?.length ? (
+              message.attachments?.length ? (
+                <div className="knowledge-stage-grounding is-hit">
+                  <BookOpen size={14} />
+                  <div>
+                    <strong>{zh ? "依据上传文档回答" : "Based on your uploaded document"}</strong>
+                    <span>{message.attachments.map((file) => file.fileName).join(" · ")}</span>
+                  </div>
+                </div>
+              ) : message.knowledgeSources?.length ? (
                 <div className="knowledge-stage-grounding is-hit">
                   <Check size={14} />
                   <div>
@@ -1019,6 +1030,15 @@ export function KnowledgeWorkspace() {
             : item
         )
       );
+      const attachmentIds = [...new Set(mapped.flatMap((message) =>
+        (message.attachments || []).map((file) => file.id)
+      ))];
+      if (attachmentIds.length) {
+        setCardAttachmentIds((previous) => ({
+          ...previous,
+          [card.id]: previous[card.id] ?? attachmentIds,
+        }));
+      }
     } catch (error) {
       console.warn("Failed to hydrate card messages", error);
     }
@@ -1032,7 +1052,7 @@ export function KnowledgeWorkspace() {
   const waitForFileReady = async (fileId: string) => {
     const startedAt = Date.now();
     while (Date.now() - startedAt < FILE_PROCESSING_TIMEOUT_MS) {
-      const detail = await apiJson<FileProcessingDetail>(`/api/files/${fileId}`);
+      const detail = await apiJson<FileProcessingDetail>(`/api/files/${fileId}?statusOnly=1`);
       setFiles((previous) => {
         const withoutCurrent = previous.filter((file) => file.id !== detail.file.id);
         return [detail.file, ...withoutCurrent];
@@ -1070,6 +1090,39 @@ export function KnowledgeWorkspace() {
       // composer. A stale library list should not block the card workspace.
     });
   }, [user?.id]);
+
+  const openedBookRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!hydrated || !user?.id) return;
+    const fileId = new URLSearchParams(window.location.search).get("file");
+    if (!fileId || openedBookRef.current === fileId) return;
+    const file = files.find((item) => item.id === fileId && item.status === "ready");
+    if (!file) return;
+    openedBookRef.current = fileId;
+    const root: KnowledgeCard = {
+      id: createId("knowledge_book"),
+      parentId: null,
+      relation: "root",
+      title: file.fileName,
+      question: "",
+      messages: [],
+      status: "idle",
+      unread: false,
+      createdAt: new Date().toISOString(),
+    };
+    commitCards((previous) => [...previous, root]);
+    setActiveCardId(root.id);
+    setCardAttachmentIds((previous) => ({ ...previous, [root.id]: [file.id] }));
+    setCardInputs((previous) => ({
+      ...previous,
+      [root.id]: locale === "zh"
+        ? "请阅读这本书，先概括内容，再挑一个适合新手的魔术，按准备、原理、表演步骤和练习方法教学，并注明对应页码。"
+        : "Read this book, summarize it, then teach one suitable beginner trick with setup, method, performance steps and practice drills. Cite the relevant pages.",
+    }));
+    syncCreateKnowledgeCard(root);
+    // The link opens one dedicated reading conversation. Subsequent file
+    // refreshes must not create duplicate cards or overwrite the draft.
+  }, [hydrated, user?.id, files, locale]);
 
   useEffect(() => {
     setUploadMenuOpen(false);
@@ -1626,15 +1679,9 @@ export function KnowledgeWorkspace() {
       );
       return;
     }
-    const invalidFile = incomingFiles.find(
-      (file) => file.size <= 0 || file.size > 25 * 1024 * 1024
-    );
-    if (invalidFile) {
-      setPageError(
-        locale === "zh"
-          ? `${invalidFile.name} 无法上传：单个文件需小于 25 MB 且不能为空。`
-          : `${invalidFile.name} cannot be uploaded. Each file must be non-empty and under 25 MB.`
-      );
+    const validationError = incomingFiles.map(fileValidationError).find(Boolean);
+    if (validationError) {
+      setPageError(validationError);
       return;
     }
 
@@ -1670,7 +1717,7 @@ export function KnowledgeWorkspace() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               fileName: file.name,
-              mimeType: file.type || "application/octet-stream",
+              mimeType: documentMimeType(file.name),
               size: file.size,
             }),
           });
@@ -1686,7 +1733,7 @@ export function KnowledgeWorkspace() {
           const uploadResponse = await fetch(presign.uploadUrl, {
             method: presign.method,
             headers: {
-              "Content-Type": file.type || "application/octet-stream",
+              "Content-Type": documentMimeType(file.name) || "application/octet-stream",
               "x-upsert": "true",
             },
             body: file,
@@ -1766,7 +1813,13 @@ export function KnowledgeWorkspace() {
     presetKnowledgeSources?: KnowledgeSourceRef[]
   ) => {
     const quotedText = cardSelectionContexts[cardId]?.trim() || "";
-    const attachmentIdsForMessage = cardAttachmentIds[cardId] ?? [];
+    const attachmentIdsForMessage = cardAttachmentIds[cardId] ?? [...new Set(
+      lineageFor(cardsRef.current, cardId).flatMap((ancestor) =>
+        cardAttachmentIds[ancestor.id] ?? ancestor.messages.flatMap((message) =>
+          (message.attachments || []).map((file) => file.id)
+        )
+      )
+    )];
     const hasPendingFile = pendingUploads.some(
       (file) => file.cardId === cardId && file.stage !== "failed"
     );
@@ -1845,6 +1898,7 @@ export function KnowledgeWorkspace() {
                   id: assistantId,
                   role: "assistant",
                   content: "",
+                  attachments: attachmentsForMessage,
                 },
               ],
             }
@@ -2476,10 +2530,33 @@ export function KnowledgeWorkspace() {
                 <Paperclip size={18} />
               </span>
               <div>
-                <strong>{locale === "zh" ? "上传照片和文件" : "Upload photos and files"}</strong>
-                <small>{locale === "zh" ? "从电脑选择，单个文件最大 25 MB" : "Choose from your computer, up to 25 MB each"}</small>
+                <strong>{locale === "zh" ? "上传书籍和文件" : "Upload books and files"}</strong>
+                <small>{FILE_FORMAT_LABEL} · 25 MB</small>
               </div>
             </button>
+            {files.some((file) => file.status === "ready") ? (
+              <>
+                <p>{locale === "zh" ? "从已上传资料中添加" : "Add from your library"}</p>
+                {files.filter((file) => file.status === "ready").slice(0, 10).map((file) => (
+                  <button
+                    key={file.id}
+                    type="button"
+                    role="menuitem"
+                    disabled={activeAttachmentIds.includes(file.id) || activeAttachmentIds.length >= 10}
+                    onClick={() => {
+                      setCardAttachmentIds((previous) => ({
+                        ...previous,
+                        [activeCard.id]: [...new Set([...(previous[activeCard.id] || []), file.id])],
+                      }));
+                      setUploadMenuOpen(false);
+                    }}
+                  >
+                    <span><BookOpen size={18} /></span>
+                    <div><strong>{file.fileName}</strong><small>{locale === "zh" ? "已解析，可阅读和追问" : "Ready to read and discuss"}</small></div>
+                  </button>
+                ))}
+              </>
+            ) : null}
             <p>
               <FileUp size={13} />
               {locale === "zh" ? "也可以把文件直接拖到输入框" : "You can also drag files into the composer"}
@@ -2489,6 +2566,7 @@ export function KnowledgeWorkspace() {
         <input
           ref={uploadInputRef}
           type="file"
+          accept={FILE_ACCEPT}
           multiple
           className="knowledge-stage-upload-input"
           onChange={(event) => {

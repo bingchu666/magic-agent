@@ -9,6 +9,9 @@ import {
 } from "@/lib/domain/types";
 import { normalizeChatHistory } from "@/lib/agent/history";
 
+export const maxDuration = 300;
+export const runtime = "nodejs";
+
 function sseLine<T extends SseEventType>(event: T, data: ChatSsePayloadMap[T]) {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }

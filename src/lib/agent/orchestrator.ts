@@ -244,6 +244,7 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
     role: "assistant",
     content: output.text,
     locale,
+    attachmentIds: input.attachmentIds,
     // Every completed turn ran the same knowledge-base grounding check the
     // client always displayed a badge for — `knowledgeSources` (possibly
     // empty) is what tells a hit from a miss, mirroring the client's own

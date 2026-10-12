@@ -2,8 +2,7 @@ import { assertSession } from "@/features/auth/session.server";
 import { supabaseDb } from "@/lib/data/supabase-db";
 import { jsonError, jsonOk } from "@/lib/ui/api";
 import { createClient } from "@supabase/supabase-js";
-
-const MAX_FILE_SIZE = 25 * 1024 * 1024;
+import { documentMimeType, fileValidationError } from "@/features/file-intelligence/file-types";
 
 function getStorageAdmin() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -28,15 +27,14 @@ export async function POST(req: Request) {
       size?: number;
     };
 
-    if (!body?.fileName || !body?.mimeType) {
-      return jsonError("fileName and mimeType are required", 400);
+    if (typeof body?.fileName !== "string") {
+      return jsonError("fileName is required", 400);
     }
     const fileName = body.fileName.trim().replace(/[\\/\0]/g, "_").slice(0, 180);
-    const mimeType = body.mimeType.trim().slice(0, 120);
+    const mimeType = documentMimeType(fileName);
     const size = Number(body.size);
-    if (!fileName || !mimeType || !Number.isSafeInteger(size) || size <= 0 || size > MAX_FILE_SIZE) {
-      return jsonError("Invalid file metadata or file is larger than 25 MB", 400);
-    }
+    const validationError = fileValidationError({ name: fileName, size });
+    if (validationError || !mimeType) return jsonError(validationError || "Unsupported file", 400);
 
     const file = await supabaseDb.createFileAsset({
       userId: session.id,
@@ -77,6 +75,7 @@ export async function POST(req: Request) {
       method: "PUT",
       expiresIn: 300,
       uploadStrategy: "direct",
+      mimeType,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to prepare upload";

@@ -275,13 +275,13 @@ export async function buildContext(params: {
     )
   ).slice(0, 10);
 
-  const magicTermRecordsPromise = loadOptionalContext(
+  const magicTermRecordsPromise = requestedAttachmentIds.length ? Promise.resolve([]) : loadOptionalContext(
     "magic term dictionary scan",
     supabaseDb.listMagicTermsForScan(),
     [],
     MAGIC_TERM_SCAN_TIMEOUT_MS
   );
-  const magicianRecordsPromise = loadOptionalContext(
+  const magicianRecordsPromise = requestedAttachmentIds.length ? Promise.resolve([]) : loadOptionalContext(
     "magician biography dictionary scan",
     supabaseDb.listMagiciansForScan(),
     [],

@@ -2,8 +2,11 @@
 
 import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
+import Link from "next/link";
+import { FILE_ACCEPT, FILE_FORMAT_LABEL, documentMimeType, fileValidationError } from "@/features/file-intelligence/file-types";
 import {
   ArrowUpRight,
+  BookOpen,
   CheckCircle2,
   Clock3,
   FileText,
@@ -61,17 +64,18 @@ export function FileWorkspace() {
     loadFiles().catch((err) => setError(err.message));
   }, []);
 
-  useEffect(() => {
-    const timer = setInterval(() => {
-      loadFiles().catch((err) => setError(err.message));
-    }, 2000);
-    return () => clearInterval(timer);
-  }, []);
-
   const hasProcessing = useMemo(
     () => files.some((file) => file.status === "processing" || file.status === "uploaded"),
     [files]
   );
+
+  useEffect(() => {
+    if (!hasProcessing) return;
+    const timer = setInterval(() => {
+      loadFiles().catch((err) => setError(err.message));
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [hasProcessing]);
 
   const statusText = (status: FileAsset["status"]) => {
     if (status === "ready") return copy.ready;
@@ -82,7 +86,9 @@ export function FileWorkspace() {
   };
 
   const handleUpload = async (list: FileList | null) => {
-    if (!list || list.length === 0) return;
+    if (!list || list.length === 0 || uploading) return;
+    const invalid = Array.from(list).map(fileValidationError).find(Boolean);
+    if (invalid) { setError(invalid); return; }
     setUploading(true);
     setError(null);
 
@@ -99,7 +105,7 @@ export function FileWorkspace() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               fileName: file.name,
-              mimeType: file.type || "application/octet-stream",
+              mimeType: documentMimeType(file.name),
               size: file.size,
             }),
           });
@@ -108,7 +114,7 @@ export function FileWorkspace() {
           const uploadRes = await fetch(presign.uploadUrl, {
             method: presign.method,
             headers: {
-              "Content-Type": file.type || "application/octet-stream",
+              "Content-Type": documentMimeType(file.name) || "application/octet-stream",
               "x-upsert": "true",
             },
             body: file,
@@ -183,10 +189,15 @@ export function FileWorkspace() {
         </div>
       </header>
 
-      <section className="magic-upload-zone">
+      <section className="magic-upload-zone" onDragOver={(event) => event.preventDefault()} onDrop={(event) => {
+        event.preventDefault();
+        void handleUpload(event.dataTransfer.files);
+      }}>
         <label>
           <input
             type="file"
+            accept={FILE_ACCEPT}
+            disabled={uploading}
             multiple
             className="hidden"
             onChange={(event) => {
@@ -208,7 +219,7 @@ export function FileWorkspace() {
                   ? "拖入文件，或点击选择"
                   : "Drop files or browse"}
             </h2>
-            <p>PDF · DOCX · TXT · MD · PNG · JPG · MP3 · MP4</p>
+            <p>{FILE_FORMAT_LABEL} · {locale === "zh" ? "单个文件最大 25 MB" : "Up to 25 MB each"}</p>
           </div>
           <ArrowUpRight size={18} />
         </label>
@@ -269,13 +280,6 @@ export function FileWorkspace() {
                       </span>
                       <p>{locale === "zh" ? file.summaryZh : file.summaryEn}</p>
                     </div>
-                    <div>
-                      <span>
-                        <FileText size={12} />
-                        Translation
-                      </span>
-                      <p>{locale === "zh" ? file.translatedZh : file.translatedEn}</p>
-                    </div>
                   </div>
                 ) : null}
 
@@ -295,6 +299,17 @@ export function FileWorkspace() {
 
                 <footer>
                   <span>{new Date(file.updatedAt).toLocaleDateString()}</span>
+                  {file.status === "ready" ? (
+                    <Link href={`/explore?file=${encodeURIComponent(file.id)}`}>
+                      <BookOpen size={14} />
+                      {locale === "zh" ? "阅读与教学" : "Read and learn"}
+                    </Link>
+                  ) : file.status === "failed" ? (
+                    <button type="button" onClick={() => {
+                      void apiJson(`/api/files/${file.id}/enqueue`, { method: "POST" })
+                        .then(loadFiles).catch((err) => setError(err.message));
+                    }}>{locale === "zh" ? "重新解析" : "Retry parsing"}</button>
+                  ) : null}
                   <button
                     type="button"
                     onClick={() => void handleDelete(file.id)}

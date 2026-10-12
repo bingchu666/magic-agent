@@ -2,6 +2,8 @@ import OpenAI from "openai";
 import { supabaseDb } from "@/lib/data/supabase-db";
 import { Locale } from "@/lib/domain/types";
 import { nowIso } from "@/lib/domain/utils";
+import { documentMimeType } from "@/features/file-intelligence/file-types";
+import { tmpdir } from "node:os";
 
 const activeJobs = new Set<string>();
 const MIN_PDF_TEXT_CHARS = 2_000;
@@ -31,7 +33,7 @@ function decodeReadableText(buffer: ArrayBuffer) {
 
 async function ocrImage(image: ArrayBuffer | Uint8Array | Buffer) {
   const { createWorker } = await import("tesseract.js");
-  const worker = await createWorker("eng");
+  const worker = await createWorker(["eng", "chi_sim"], 1, { cachePath: tmpdir() });
   try {
     const bytes = image instanceof ArrayBuffer ? new Uint8Array(image) : image;
     const result = await worker.recognize(Buffer.from(bytes));
@@ -41,7 +43,7 @@ async function ocrImage(image: ArrayBuffer | Uint8Array | Buffer) {
   }
 }
 
-async function ocrPdf(buffer: ArrayBuffer): Promise<ExtractedPage[]> {
+async function ocrPdf(buffer: ArrayBuffer, pageNumbers?: number[]): Promise<ExtractedPage[]> {
   const [{ pdf }, { createScheduler, createWorker }] = await Promise.all([
     import("pdf-to-img"),
     import("tesseract.js"),
@@ -53,26 +55,26 @@ async function ocrPdf(buffer: ArrayBuffer): Promise<ExtractedPage[]> {
 
   try {
     const workers = await Promise.all(
-      Array.from({ length: workerCount }, () => createWorker("eng"))
+      Array.from({ length: workerCount }, () =>
+        createWorker(["eng", "chi_sim"], 1, { cachePath: tmpdir() })
+      )
     );
     workers.forEach((worker) => scheduler.addWorker(worker));
 
     const pages: ExtractedPage[] = [];
     const batchSize = workerCount * 2;
-    for (let start = 1; start <= document.length; start += batchSize) {
-      const pageNumbers = Array.from(
-        { length: Math.min(batchSize, document.length - start + 1) },
-        (_, index) => start + index
-      );
+    const targets = pageNumbers || Array.from({ length: document.length }, (_, i) => i + 1);
+    for (let start = 0; start < targets.length; start += batchSize) {
+      const batchPages = targets.slice(start, start + batchSize);
       const images = await Promise.all(
-        pageNumbers.map((pageNumber) => document.getPage(pageNumber))
+        batchPages.map((pageNumber) => document.getPage(pageNumber))
       );
       const results = await Promise.all(
         images.map((image) => scheduler.addJob("recognize", image))
       );
       results.forEach((result, index) => {
         pages.push({
-          page: pageNumbers[index],
+          page: batchPages[index],
           text: normalizeExtractedText(result.data.text),
         });
       });
@@ -91,8 +93,8 @@ export async function extractPdf(buffer: ArrayBuffer): Promise<ExtractedPage[]> 
     useSystemFonts: true,
   }).promise;
 
+  const pages: ExtractedPage[] = [];
   try {
-    const pages: ExtractedPage[] = [];
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
       const page = await document.getPage(pageNumber);
       const content = await page.getTextContent();
@@ -109,7 +111,17 @@ export async function extractPdf(buffer: ArrayBuffer): Promise<ExtractedPage[]> 
       MIN_PDF_TEXT_CHARS,
       Math.max(80, document.numPages * 40)
     );
-    if (extractedChars >= minimumUsefulText) return pages;
+    if (extractedChars >= minimumUsefulText) {
+      const unreadablePages = pages.filter((page) => page.text.length < 40).map((page) => page.page);
+      if (unreadablePages.length) {
+        const recognized = await ocrPdf(buffer, unreadablePages);
+        for (const page of recognized) {
+          const original = pages.find((item) => item.page === page.page);
+          if (original && page.text.length > original.text.length) original.text = page.text;
+        }
+      }
+      return pages;
+    }
   } finally {
     await document.destroy();
   }
@@ -117,17 +129,25 @@ export async function extractPdf(buffer: ArrayBuffer): Promise<ExtractedPage[]> 
   return ocrPdf(buffer);
 }
 
-async function extractDocument(
+export async function extractDocument(
   buffer: ArrayBuffer,
   mimeType: string,
   fileName: string
 ): Promise<ExtractedPage[]> {
   const lowerName = fileName.toLowerCase();
+  if (!documentMimeType(fileName)) throw new Error("Unsupported document format");
   if (mimeType === "application/pdf" || lowerName.endsWith(".pdf")) {
     return extractPdf(buffer);
   }
   if (mimeType.startsWith("image/")) {
     return [{ page: 1, text: await ocrImage(buffer) }];
+  }
+  if (lowerName.endsWith(".docx")) {
+    const { extractRawText } = await import("mammoth");
+    const result = await extractRawText({ buffer: Buffer.from(buffer) });
+    const text = normalizeExtractedText(result.value);
+    if (!text) throw new Error("No readable text was found in the Word document");
+    return [{ page: 1, text }];
   }
 
   const text = decodeReadableText(buffer);
@@ -237,7 +257,7 @@ async function summarizeWithDeepSeek(text: string, fileName: string) {
     baseURL: process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com",
   });
   const model =
-    process.env.DEEPSEEK_MODEL?.split(",")[0]?.trim() || "deepseek-v4-flash";
+    process.env.DEEPSEEK_MODEL?.split(",")[0]?.trim() || "deepseek-flash";
 
   try {
     const completion = await client.chat.completions.create({
@@ -254,7 +274,8 @@ async function summarizeWithDeepSeek(text: string, fileName: string) {
         },
       ],
       max_tokens: 2_400,
-    });
+      reasoning_effort: "none",
+    }, { timeout: 60_000, maxRetries: 0 });
     const content = completion.choices[0]?.message?.content;
     return content ? parseBilingualSummary(content, text, fileName) : fallback;
   } catch (error) {
@@ -285,6 +306,9 @@ async function runProcessing(jobId: string) {
   try {
     const upload = await supabaseDb.getUpload(file.id);
     if (!upload) throw new Error("Uploaded file is missing from storage");
+    if (upload.byteLength !== file.size || upload.byteLength > 25 * 1024 * 1024) {
+      throw new Error("Uploaded file size does not match its metadata");
+    }
 
     const pages = await extractDocument(upload, file.mimeType, file.fileName);
     const fullText = pages
