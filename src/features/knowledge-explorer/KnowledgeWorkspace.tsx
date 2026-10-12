@@ -1047,6 +1047,7 @@ export function KnowledgeWorkspace() {
   const loadFiles = async () => {
     const data = await apiJson<{ items: FileAsset[] }>("/api/files");
     setFiles(data.items);
+    return data.items;
   };
 
   const waitForFileReady = async (fileId: string) => {
@@ -1099,6 +1100,7 @@ export function KnowledgeWorkspace() {
     const file = files.find((item) => item.id === fileId && item.status === "ready");
     if (!file) return;
     openedBookRef.current = fileId;
+    window.history.replaceState(null, "", window.location.pathname);
     const root: KnowledgeCard = {
       id: createId("knowledge_book"),
       parentId: null,
@@ -1832,8 +1834,17 @@ export function KnowledgeWorkspace() {
       return;
     }
 
+    let availableFiles = files;
+    if (attachmentIdsForMessage.some((fileId) => !availableFiles.some((file) => file.id === fileId))) {
+      try {
+        availableFiles = await loadFiles();
+      } catch {
+        setPageError(locale === "zh" ? "无法加载附件，请稍后重试。" : "Unable to load attachments. Please retry.");
+        return;
+      }
+    }
     const resolvedAttachments = attachmentIdsForMessage.map((fileId) =>
-      files.find((file) => file.id === fileId)
+      availableFiles.find((file) => file.id === fileId)
     );
     const hasUnavailableAttachment =
       resolvedAttachments.some((file) => !file || file.status !== "ready");
@@ -1847,7 +1858,7 @@ export function KnowledgeWorkspace() {
     }
 
     const attachmentsForMessage = attachmentIdsForMessage
-      .map((fileId) => files.find((file) => file.id === fileId))
+      .map((fileId) => availableFiles.find((file) => file.id === fileId))
       .filter((file): file is FileAsset => Boolean(file))
       .map((file) => ({
         id: file.id,
