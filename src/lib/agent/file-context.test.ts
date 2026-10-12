@@ -51,4 +51,15 @@ describe("uploaded book grounding", () => {
     vi.spyOn(supabaseDb, "listFileInsightsByIds").mockResolvedValue([]);
     await expect(buildContext(params)).rejects.toThrow("仍在解析");
   });
+
+  it("does not present text or Word extraction segments as real PDF pages", async () => {
+    vi.spyOn(supabaseDb, "listFilesByIds").mockResolvedValue([
+      { ...file, fileName: "Practice Book.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
+    ]);
+    vi.spyOn(supabaseDb, "listFileInsightsByIds").mockResolvedValue([insight]);
+    const context = await buildContext(params);
+    expect(context.fileContext).toContain("NOT real document pages");
+    expect(context.fileContext).toContain("Cite ONLY the filename and section headings");
+    expect(context.fileContext).not.toContain("ordered by physical PDF page");
+  });
 });

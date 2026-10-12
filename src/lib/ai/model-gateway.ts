@@ -167,7 +167,7 @@ const system = `${configuredSystem}\n\n${PRODUCT_IDENTITY_PROMPT}\n\n${RETRIEVAL
     messages.push({
       role: "assistant",
       content:
-        "I have loaded the attached-file context and will answer from it, preserving its PDF page references.",
+        "I have loaded the attached-file context and will answer from its supplied text and source-reference metadata.",
     });
   }
 

@@ -15,14 +15,9 @@ import {
   Sparkles,
   Trash2,
 } from "lucide-react";
-import { FileAsset, FileInsight } from "@/lib/domain/types";
+import { FileAsset } from "@/lib/domain/types";
 import { useSession } from "@/features/auth/session.client";
 import { t } from "@/lib/ui/i18n";
-
-type FileDetailResponse = {
-  file: FileAsset;
-  insights: FileInsight[];
-};
 
 async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, { cache: "no-store", ...init });
@@ -39,7 +34,6 @@ export function FileWorkspace() {
   const copy = t(locale);
 
   const [files, setFiles] = useState<FileAsset[]>([]);
-  const [insightsByFile, setInsightsByFile] = useState<Record<string, FileInsight[]>>({});
   const [uploading, setUploading] = useState(false);
   const [deletingFileId, setDeletingFileId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -47,17 +41,6 @@ export function FileWorkspace() {
   const loadFiles = async () => {
     const data = await apiJson<{ items: FileAsset[] }>("/api/files");
     setFiles(data.items);
-
-    const ready = data.items.filter((file) => file.status === "ready").slice(0, 8);
-    const details = await Promise.all(
-      ready.map((file) => apiJson<FileDetailResponse>(`/api/files/${file.id}`))
-    );
-
-    const map: Record<string, FileInsight[]> = {};
-    for (const detail of details) {
-      map[detail.file.id] = detail.insights;
-    }
-    setInsightsByFile(map);
   };
 
   useEffect(() => {
@@ -280,20 +263,6 @@ export function FileWorkspace() {
                       </span>
                       <p>{locale === "zh" ? file.summaryZh : file.summaryEn}</p>
                     </div>
-                  </div>
-                ) : null}
-
-                {insightsByFile[file.id]?.length ? (
-                  <div className="magic-insight-list">
-                    <span>{locale === "zh" ? "结构化洞察" : "Structured insights"}</span>
-                    <ul>
-                      {insightsByFile[file.id].slice(0, 4).map((insight) => (
-                        <li key={insight.id}>
-                          <i />
-                          <span>{insight.content}</span>
-                        </li>
-                      ))}
-                    </ul>
                   </div>
                 ) : null}
 

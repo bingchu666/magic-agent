@@ -460,7 +460,9 @@ export async function buildContext(params: {
         ? [
             summaries[0]?.content ||
               (params.locale === "zh" ? file.summaryZh : file.summaryEn),
-            "Complete extracted document text, ordered by PDF page:",
+            file.mimeType === "application/pdf"
+              ? "Complete extracted document text, ordered by physical PDF page:"
+              : "Complete extracted document text, ordered by extraction segment:",
             completeExtractedText,
           ]
             .filter((value): value is string => Boolean(value?.trim()))
@@ -489,6 +491,9 @@ export async function buildContext(params: {
       return [
         `Attached file: ${file.fileName}`,
         `MIME type: ${file.mimeType}`,
+        file.mimeType === "application/pdf"
+          ? "Source pagination: [Page N] identifies physical PDF page N. Cite this filename and PDF page number."
+          : "Source pagination: this is NOT a PDF. [Page N] labels below are INTERNAL extraction segments, NOT real document pages. Cite ONLY the filename and section headings. Never call this file a PDF or claim a page number for it.",
         `Processing status: ${file.status}`,
         inlineFullDocument
           ? `Document access mode: complete extracted text (${indexedChunks.length} ordered chunks) is supplied below, not a sample.`
