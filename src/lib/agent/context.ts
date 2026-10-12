@@ -2,9 +2,11 @@ import { ChatHistoryMessage, FileInsight, KnowledgeSourceRef, Locale } from "@/l
 import { supabaseDb } from "@/lib/data/supabase-db";
 import { stripMarkdown } from "@/lib/domain/utils";
 import {
+  buildKnowledgeSearchQuery,
   extractKnowledgeSourceTitles,
   retrieveOptionalKnowledge,
 } from "@/lib/agent/knowledge-retrieval";
+import { selectDirectlyRelevantKnowledge } from "@/lib/agent/knowledge-relevance";
 import { findMagicTermMentions } from "@/lib/agent/magic-term-match";
 import { findMagicianMentions } from "@/lib/agent/magician-match";
 
@@ -273,42 +275,40 @@ export async function buildContext(params: {
     )
   ).slice(0, 10);
 
-  const [storedMessages, explicitFiles, explicitInsights, retrievedTrickKnowledge, magicTermRecords, magicianRecords] =
-    await Promise.all([
-      clientHistory.length > 0
-        ? Promise.resolve([])
-        : loadOptionalContext(
-            "stored conversation history",
-            supabaseDb.listMessages(threadId),
-            []
-          ),
-      // Explicit attachments are user-selected primary context. They must not
-      // silently disappear behind the short timeout used for optional context.
-      supabaseDb.listFilesByIds(userId, requestedAttachmentIds),
-      supabaseDb.listFileInsightsByIds(userId, requestedAttachmentIds),
-      // A user-selected file is the authoritative source for this turn.
-      // Mixing unrelated app-library hits into a book question is a direct
-      // route to confident but unsupported answers.
-      requestedAttachmentIds.length > 0
-        ? Promise.resolve("")
-        : retrieveOptionalKnowledge({
-            query: userMessage,
-            search: (query) => supabaseDb.searchTrickChunks(query),
-          }),
-      loadOptionalContext(
-        "magic term dictionary scan",
-        supabaseDb.listMagicTermsForScan(),
-        [],
-        MAGIC_TERM_SCAN_TIMEOUT_MS
-      ),
-      loadOptionalContext(
-        "magician biography dictionary scan",
-        supabaseDb.listMagiciansForScan(),
-        [],
-        MAGICIAN_SCAN_TIMEOUT_MS
-      ),
-    ]);
+  const magicTermRecordsPromise = loadOptionalContext(
+    "magic term dictionary scan",
+    supabaseDb.listMagicTermsForScan(),
+    [],
+    MAGIC_TERM_SCAN_TIMEOUT_MS
+  );
+  const magicianRecordsPromise = loadOptionalContext(
+    "magician biography dictionary scan",
+    supabaseDb.listMagiciansForScan(),
+    [],
+    MAGICIAN_SCAN_TIMEOUT_MS
+  );
+  const [storedMessages, explicitFiles, explicitInsights] = await Promise.all([
+    clientHistory.length > 0
+      ? Promise.resolve([])
+      : loadOptionalContext(
+          "stored conversation history",
+          supabaseDb.listMessages(threadId),
+          []
+        ),
+    // Explicit attachments are user-selected primary context. They must not
+    // silently disappear behind the short timeout used for optional context.
+    supabaseDb.listFilesByIds(userId, requestedAttachmentIds),
+    supabaseDb.listFileInsightsByIds(userId, requestedAttachmentIds),
+  ]);
   const messages = storedMessages.slice(-16);
+  const history = clientHistory.length > 0
+    ? clientHistory
+    : messages
+        .filter((message) => message.role === "user" || message.role === "assistant")
+        .map((message) => ({
+          role: message.role as "user" | "assistant",
+          content: stripMarkdown(message.content),
+        }));
 
   const uniqueInsights = explicitInsights.filter(
     (insight, idx, arr) => idx === arr.findIndex((item) => item.id === insight.id)
@@ -355,14 +355,28 @@ export async function buildContext(params: {
     );
   }
 
-  const history = clientHistory.length > 0
-    ? clientHistory
-    : messages
-        .filter((message) => message.role === "user" || message.role === "assistant")
-        .map((message) => ({
-          role: message.role as "user" | "assistant",
-          content: stripMarkdown(message.content),
-        }));
+  const [retrievedTrickKnowledge, magicTermRecords, magicianRecords] =
+    await Promise.all([
+      // A user-selected file is the authoritative source for this turn.
+      // Mixing app-library candidates into a document question is a direct
+      // route to confident but unsupported answers.
+      requestedAttachmentIds.length > 0
+        ? Promise.resolve("")
+        : retrieveOptionalKnowledge({
+            query: userMessage,
+            searchQuery: buildKnowledgeSearchQuery(userMessage, history),
+            search: (query) => supabaseDb.searchTrickChunks(query, 8),
+            selectRelevant: ({ candidates }) =>
+              selectDirectlyRelevantKnowledge({
+                question: userMessage,
+                history,
+                candidates,
+                locale: params.locale,
+              }),
+          }),
+      magicTermRecordsPromise,
+      magicianRecordsPromise,
+    ]);
 
   const requestedPages = requestedPageNumbers(userMessage);
   const perFileBudget = Math.max(

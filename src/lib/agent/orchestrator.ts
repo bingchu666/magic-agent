@@ -191,11 +191,6 @@ export async function runAgentOrchestration(input: OrchestratorInput): Promise<{
     input.responseMode === "annotated"
       ? "Mark 3 to 6 concrete, useful concepts that a learner may want to inspect next by wrapping only the exact term in double square brackets, for example [[misdirection]]. Keep the markers inline inside the natural answer. Do not explain the marker syntax, do not put full sentences inside markers, and do not mark generic words."
       : "",
-    context.knowledgeSources.length
-      ? locale === "zh"
-        ? `本次已命中应用知识库。优先使用检索内容，并在回答末尾单独添加“知识库依据：${context.knowledgeSources.map((item) => item.title).join("；")}”。只能列出这些真实标题，不要编造来源。`
-        : `The app knowledge base matched this request. Use the retrieved material and end with "Database grounding: ${context.knowledgeSources.map((item) => item.title).join("; ")}". List only these exact titles and do not invent sources.`
-      : "",
   ].filter(Boolean);
 
   const generationInput = {

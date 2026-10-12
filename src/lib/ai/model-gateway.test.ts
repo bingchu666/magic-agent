@@ -54,13 +54,12 @@ describe("model gateway prompt", () => {
     const system = systemMessage(messages);
     const user = latestUserMessage(messages);
 
-    expect(system).toContain("never a permission gate");
-    expect(system).toContain("answer normally and completely from your general knowledge");
-    expect(system).toContain("Never refuse");
+    expect(system).toContain("candidate evidence, not automatically relevant facts");
+    expect(system).toContain("answer from reliable general knowledge");
     expect(system).toContain("For any broad but answerable request");
     expect(user).not.toContain("no matching entries");
     expect(user).not.toContain("Do not fabricate a trick method");
-    expect(user).not.toContain("Optional retrieved knowledge");
+    expect(user).not.toContain("Candidate database evidence");
   });
 
   it("adds retrieved knowledge as optional prioritized context", () => {
@@ -69,12 +68,12 @@ describe("model gateway prompt", () => {
     );
     const user = latestUserMessage(messages);
 
-    expect(user).toContain("Optional retrieved knowledge");
+    expect(user).toContain("Candidate database evidence");
     expect(user).toContain("消失的硬币");
     const system = systemMessage(messages);
-    expect(system).toContain("prioritize their concrete facts");
-    expect(system).toContain("user-authorized reference material");
-    expect(system).toContain("Do not refuse, withhold the method");
+    expect(system).toContain("candidate evidence");
+    expect(system).toContain("Semantic similarity alone is never proof");
+    expect(system).toContain("Never reshape the user's question");
     expect(system).toContain("Do not invent citations");
   });
 
@@ -131,7 +130,7 @@ describe("model gateway prompt", () => {
     const system = systemMessage(buildMessages(input()));
 
     expect(system).toContain("Use a concise teaching style.");
-    expect(system).toContain("retrieved database knowledge is optional supporting context");
+    expect(system).toContain("retrieved database excerpts are candidate evidence");
   });
 
   it("always identifies the product developers by name", () => {
@@ -155,7 +154,7 @@ describe("model gateway prompt", () => {
 
     expect(system).toContain("Interdisciplinary knowledge guide.");
     expect(system).not.toContain("Global magic persona.");
-    expect(system).toContain("retrieved database knowledge is optional supporting context");
+    expect(system).toContain("retrieved database excerpts are candidate evidence");
   });
 
   it("adds feature-scoped response annotations without changing the user question", () => {

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  buildKnowledgeSearchQuery,
   extractKnowledgeSourceTitles,
   retrieveOptionalKnowledge,
 } from "@/lib/agent/knowledge-retrieval";
@@ -67,6 +68,37 @@ describe("retrieveOptionalKnowledge", () => {
       "Optional knowledge retrieval hit",
       expect.objectContaining({ matches: 1 })
     );
+  });
+
+  it("uses recent conversation as search context for naturally worded follow-ups", () => {
+    const query = buildKnowledgeSearchQuery("我喜欢这种风格，介绍一个适合近景的", [
+      { role: "user", content: "我比较喜欢硬币魔术" },
+      { role: "assistant", content: "可以从视觉化的硬币消失开始。" },
+    ]);
+
+    expect(query).toContain("我喜欢这种风格");
+    expect(query).toContain("硬币魔术");
+    expect(query).toContain("硬币消失");
+  });
+
+  it("drops even high-similarity candidates when the evidence gate rejects them", async () => {
+    const result = await retrieveOptionalKnowledge({
+      query: "全面讲解一个刘谦的魔术",
+      search: async () => [
+        {
+          title: "Inside/Outside",
+          content: "A card routine created by Gary Kurtz.",
+          similarity: 0.91,
+        },
+      ],
+      selectRelevant: async ({ question, candidates }) => {
+        expect(question).toBe("全面讲解一个刘谦的魔术");
+        expect(candidates).toHaveLength(1);
+        return [];
+      },
+    });
+
+    expect(result).toBe("");
   });
 
   it("exposes only the real titles used for database grounding", () => {

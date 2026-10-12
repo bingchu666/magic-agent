@@ -1,10 +1,19 @@
+import type { ChatHistoryMessage } from "@/lib/domain/types";
+
 const DEFAULT_MIN_SIMILARITY = 0.35;
 const DEFAULT_MAX_CONTEXT_CHARS = 4000;
 const DEFAULT_TIMEOUT_MS = 3000;
+const SEARCH_HISTORY_CHARS = 2200;
 
 export type KnowledgeSearch = (
   query: string
 ) => Promise<Record<string, unknown>[]>;
+
+export type KnowledgeSelector = (params: {
+  question: string;
+  searchQuery: string;
+  candidates: Record<string, unknown>[];
+}) => Promise<Record<string, unknown>[]>;
 
 export function extractKnowledgeSourceTitles(context: string): string[] {
   return context
@@ -12,6 +21,27 @@ export function extractKnowledgeSourceTitles(context: string): string[] {
     .map((chunk) => chunk.match(/^([^\n：]{1,120})：\n/)?.[1]?.trim() ?? "")
     .filter((title, index, titles) => Boolean(title) && titles.indexOf(title) === index)
     .slice(0, 5);
+}
+
+/**
+ * Give high-recall search enough conversational meaning to understand natural,
+ * indirect requests without pretending that the expanded text is evidence.
+ * A separate relevance gate still decides whether any returned row is usable.
+ */
+export function buildKnowledgeSearchQuery(
+  question: string,
+  history: ChatHistoryMessage[]
+) {
+  const current = question.trim();
+  if (!current) return "";
+  const recent = history
+    .slice(-4)
+    .map((message) => `${message.role}: ${message.content.trim().slice(0, 900)}`)
+    .filter((line) => line.length > 0)
+    .join("\n")
+    .slice(-SEARCH_HISTORY_CHARS);
+  if (!recent) return current;
+  return `${current}\n\nRecent conversation context:\n${recent}\n\nCurrent request:\n${current}`;
 }
 
 function resolveMinSimilarity(value?: number) {
@@ -46,13 +76,16 @@ function formatRelevantChunk(
  */
 export async function retrieveOptionalKnowledge(params: {
   query: string;
+  searchQuery?: string;
   search: KnowledgeSearch;
+  selectRelevant?: KnowledgeSelector;
   minSimilarity?: number;
   maxContextChars?: number;
   timeoutMs?: number;
 }): Promise<string> {
   const query = params.query.trim();
   if (!query) return "";
+  const searchQuery = params.searchQuery?.trim() || query;
   const startedAt = Date.now();
 
   try {
@@ -64,7 +97,7 @@ export async function retrieveOptionalKnowledge(params: {
     );
     let timeout: NodeJS.Timeout | undefined;
     const rows = await Promise.race([
-      params.search(query),
+      params.search(searchQuery),
       new Promise<Record<string, unknown>[]>((_, reject) => {
         timeout = setTimeout(
           () => reject(new Error(`retrieval timed out after ${timeoutMs}ms`)),
@@ -75,19 +108,34 @@ export async function retrieveOptionalKnowledge(params: {
       if (timeout) clearTimeout(timeout);
     });
     const minSimilarity = resolveMinSimilarity(params.minSimilarity);
+    const candidates = rows.filter((row) => {
+      const similarity = Number(row.similarity);
+      return Number.isFinite(similarity) && similarity >= minSimilarity;
+    });
+    const relevantRows = params.selectRelevant
+      ? await params.selectRelevant({
+          question: query,
+          searchQuery,
+          candidates,
+        })
+      : candidates;
+    const allowedRows = new Set(relevantRows);
     const chunks = rows
+      .filter((row) => allowedRows.has(row))
       .map((row) => formatRelevantChunk(row, minSimilarity))
       .filter((chunk): chunk is string => Boolean(chunk));
     const mode = String(rows[0]?.searchMode || rows[0]?.search_mode || "unknown");
     if (chunks.length > 0) {
       console.info("Optional knowledge retrieval hit", {
         mode,
+        candidates: candidates.length,
         matches: chunks.length,
         durationMs: Date.now() - startedAt,
       });
     } else {
       console.info("Optional knowledge retrieval miss", {
         mode,
+        candidates: candidates.length,
         durationMs: Date.now() - startedAt,
       });
     }

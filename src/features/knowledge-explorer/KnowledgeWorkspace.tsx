@@ -33,6 +33,7 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
+import Image from "next/image";
 import {
   type CSSProperties,
   type FormEvent,
@@ -241,15 +242,7 @@ function createStarterCards(locale: Locale = "zh"): KnowledgeCard[] {
       status: "idle",
       unread: false,
       createdAt: new Date().toISOString(),
-      messages: [
-        {
-          id: "glass_starter_assistant",
-          role: "assistant",
-          content: zh
-            ? "这里不再是线性聊天框。AI 会把值得继续理解的[[关键词]]标出来：点击后先看一个小预览，只有你确认创建，才会从当前节点展开一张新的独立卡片。\n\n右侧导航会自动记录卡片之间的父子关系；数据库命中情况也会显示在每次回答下方。"
-            : "This is no longer a linear chat. AI marks useful [[concepts]] for deeper exploration: preview one, then confirm to open a new independent card from the current node.\n\nThe navigator records parent-child relationships automatically and each answer shows whether the knowledge base was used.",
-        },
-      ],
+      messages: [],
     },
   ];
 }
@@ -1206,7 +1199,9 @@ export function KnowledgeWorkspace() {
       previous.map((card) => {
         const stillUntouchedStarter =
           card.id === "glass_starter" &&
-          card.messages.some((message) => message.id === "glass_starter_assistant");
+          !card.threadId &&
+          (card.messages.length === 0 ||
+            card.messages.some((message) => message.id === "glass_starter_assistant"));
         return stillUntouchedStarter ? localizedStarter : card;
       })
     );
@@ -2536,6 +2531,21 @@ export function KnowledgeWorkspace() {
   return (
     <div className={`knowledge-stage ${sidebarOpen ? "is-sidebar-open" : ""}`}>
       <aside className="knowledge-stage-rail" aria-label={locale === "zh" ? "知识探索工具" : "Knowledge tools"}>
+        <Link
+          href="/explore"
+          className="knowledge-stage-brand-logo"
+          title="Magic Agent"
+          aria-label={locale === "zh" ? "Magic Agent 首页" : "Magic Agent home"}
+        >
+          <Image
+            src="/magic-agent-app-logo.png"
+            alt=""
+            width={40}
+            height={40}
+            priority
+          />
+          <span>Magic Agent</span>
+        </Link>
         <button
           type="button"
           className="knowledge-stage-sidebar-toggle"
@@ -3005,10 +3015,14 @@ export function KnowledgeWorkspace() {
 
         {showOnboarding ? (
           <div className="knowledge-stage-onboarding">
-            <h2 className="knowledge-stage-onboarding-heading">
-              <Sparkles size={22} />
-              {locale === "zh" ? "准备好了，问点什么？" : "Ready when you are"}
-            </h2>
+            <Image
+              className="knowledge-stage-onboarding-logo"
+              src="/magic-agent-horizontal-logo.png"
+              alt="Magic Agent"
+              width={420}
+              height={105}
+              priority
+            />
             {composerForm}
             {quickPrompts}
           </div>

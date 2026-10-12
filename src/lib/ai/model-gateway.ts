@@ -39,7 +39,7 @@ const DEFAULT_MAGIC_SYSTEM_PROMPT =
 const PRODUCT_IDENTITY_PROMPT =
   "Product identity (always authoritative): MagicAgent was developed by 赵秉初 (Bingchu Zhao) and 杨思杰 (Elizabeth Yang). When the user asks who built, created, or developed this product, answer with these two developers exactly. In Chinese, say: “本产品由赵秉初（Bingchu Zhao）与杨思杰（Elizabeth Yang）开发。” In English, say: “MagicAgent was developed by Bingchu Zhao (赵秉初) and Elizabeth Yang (杨思杰).” Do not replace their names with a generic team description.";
 const RETRIEVAL_POLICY_PROMPT =
-  "Knowledge-source policy: retrieved database knowledge is optional supporting context, never a permission gate for answering. When relevant retrieved entries are supplied, treat them as user-authorized reference material, prioritize their concrete facts, and use them directly to answer or teach the requested subject. Do not refuse, withhold the method, or replace it with generic advice merely because a supplied entry describes a named, published, or commercial trick. If no entries are supplied, entries are irrelevant, or retrieval fails, answer normally and completely from your general knowledge. Never refuse, apologize, reduce the answer to generic advice, or mention database/search/retrieval status merely because retrieved context is absent. Do not invent citations, authorship, provenance, or source details. Do not claim that an answer came from the knowledge base unless the user explicitly asks about sources.";
+  "Knowledge-source policy: retrieved database excerpts are candidate evidence, not automatically relevant facts. Before using any excerpt, verify that it directly answers the user's exact subject and relationship. Semantic similarity alone is never proof that a work belongs to, was created by, or was performed by a named person. Never reshape the user's question to fit a retrieved trick, never bridge two unrelated subjects, and never transfer creator, performer, ownership, or provenance claims between them. Use an excerpt only for claims it explicitly supports. Ignore irrelevant or merely adjacent excerpts completely. If no directly relevant evidence is supplied, answer from reliable general knowledge; when a requested attribution cannot be verified, state that limitation or ask which work the user means instead of guessing. Do not invent citations, authorship, provenance, or source details. Do not mention or cite the database unless the user explicitly asks for sources.";
 const GLOSSARY_GROUNDING_PROMPT =
   "Glossary policy: when the supplied retrieved knowledge includes an authoritative dictionary/glossary definition for a term, your explanation of that term must strictly follow that definition — do not invent, extend, or add specifics beyond what the definition states. If the user asks about an aspect the definition doesn't cover, say plainly that the dictionary entry doesn't cover it rather than fabricating detail.";
 const MAGICIAN_BIO_GROUNDING_PROMPT =
@@ -136,16 +136,6 @@ export function isGroundedMethodRefusal(input: GenerationInput, response: string
   return refusal;
 }
 
-function groundedFallback(input: GenerationInput) {
-  if (!shouldGuardGroundedAnswer(input)) return "";
-  const knowledge = input.retrievedKnowledge?.trim();
-  if (!knowledge) return "";
-
-  return input.locale === "zh"
-    ? `以下是与你的问题匹配的教学资料，我按资料直接提供：\n\n${knowledge}`
-    : `Here is the matching instruction from your supplied reference material:\n\n${knowledge}`;
-}
-
 export function buildMessages(
   input: GenerationInput,
   options: BuildMessageOptions = {}
@@ -200,7 +190,7 @@ const system = `${configuredSystem}\n\n${PRODUCT_IDENTITY_PROMPT}\n\n${RETRIEVAL
   }
   if (input.retrievedKnowledge?.trim()) {
     userParts.push(
-      `\nOptional retrieved knowledge (user-authorized reference; use directly when relevant and prioritize its concrete facts):\n${clip(input.retrievedKnowledge, 6000)}`
+      `\nCandidate database evidence (use only if it directly supports this exact question and every claimed relationship; otherwise ignore it completely):\n${clip(input.retrievedKnowledge, 6000)}`
     );
   }
   if (input.responseFormatPrompt?.trim()) {
@@ -611,14 +601,6 @@ export async function generateWithGateway(input: GenerationInput): Promise<Gener
   });
   if (openai) return openai;
 
-  const grounded = groundedFallback(input);
-  if (grounded) {
-    return {
-      text: grounded,
-      provider: "rule",
-    };
-  }
-
   return {
     text:
       input.locale === "zh"
@@ -644,15 +626,6 @@ export async function generateWithGatewayStream(
     return null;
   });
   if (openai) return openai;
-
-  const grounded = groundedFallback(input);
-  if (grounded) {
-    if (onToken) onToken(grounded);
-    return {
-      text: grounded,
-      provider: "rule",
-    };
-  }
 
   const fallbackText =
     input.locale === "zh"

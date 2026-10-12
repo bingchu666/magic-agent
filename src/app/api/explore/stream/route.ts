@@ -2,9 +2,11 @@ import { assertSession } from "@/features/auth/session.server";
 import { generateWithGatewayStream } from "@/lib/ai/model-gateway";
 import { normalizeChatHistory } from "@/lib/agent/history";
 import {
+  buildKnowledgeSearchQuery,
   extractKnowledgeSourceTitles,
   retrieveOptionalKnowledge,
 } from "@/lib/agent/knowledge-retrieval";
+import { selectDirectlyRelevantKnowledge } from "@/lib/agent/knowledge-relevance";
 import { supabaseDb } from "@/lib/data/supabase-db";
 import { ChatHistoryMessage, Locale } from "@/lib/domain/types";
 
@@ -44,10 +46,22 @@ export async function POST(req: Request) {
       attachmentIds.length
         ? supabaseDb.listFileInsightsByIds(session.id, attachmentIds)
         : Promise.resolve([]),
-      retrieveOptionalKnowledge({
-        query: body.searchQuery?.trim() || question,
-        search: (query) => supabaseDb.searchTrickChunks(query),
-      }),
+      attachmentIds.length
+        ? Promise.resolve("")
+        : retrieveOptionalKnowledge({
+            query: question,
+            searchQuery:
+              body.searchQuery?.trim() ||
+              buildKnowledgeSearchQuery(question, normalizeChatHistory(body.history)),
+            search: (query) => supabaseDb.searchTrickChunks(query, 8),
+            selectRelevant: ({ candidates }) =>
+              selectDirectlyRelevantKnowledge({
+                question,
+                history: normalizeChatHistory(body.history),
+                candidates,
+                locale,
+              }),
+          }),
     ]);
     const knowledgeSources = extractKnowledgeSourceTitles(retrievedKnowledge);
     const fileContext = insights
@@ -72,11 +86,6 @@ export async function POST(req: Request) {
               fileContext,
               retrievedKnowledge,
               systemPrompt: EXPLORE_SYSTEM_PROMPT,
-              responseFormatPrompt: knowledgeSources.length
-                ? locale === "zh"
-                  ? `本次已命中应用知识库。优先使用检索内容，并在回答末尾单独添加“知识库依据：${knowledgeSources.join("；")}”。只能列出这些真实标题。`
-                  : `Use the matched app knowledge base and end with "Database grounding: ${knowledgeSources.join("; ")}". List only these exact titles.`
-                : undefined,
             },
             (text) => {
               if (text) write("token", { text });
