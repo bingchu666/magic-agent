@@ -22,7 +22,10 @@ export type GenerationResult = {
 
 const MODEL_TIMEOUT_MS = Number(process.env.MODEL_TIMEOUT_MS || 25000);
 const MODEL_STREAM_TIMEOUT_MS = Number(process.env.MODEL_STREAM_TIMEOUT_MS || 180000);
-const MODEL_MAX_TOKENS = Number(process.env.MODEL_MAX_TOKENS || 2600);
+const MODEL_MAX_TOKENS = Number(process.env.MODEL_MAX_TOKENS || 1200);
+const MODEL_DETAILED_MAX_TOKENS = Number(
+  process.env.MODEL_DETAILED_MAX_TOKENS || Math.max(2200, MODEL_MAX_TOKENS)
+);
 const MODEL_TEMPERATURE = Number(process.env.MODEL_TEMPERATURE || 0.55);
 const HISTORY_CLIP_CHARS = Number(process.env.MODEL_HISTORY_CHARS || 16000);
 const HISTORY_MAX_TURNS = Number(process.env.MODEL_HISTORY_TURNS || 20);
@@ -210,11 +213,39 @@ const system = `${configuredSystem}\n\n${PRODUCT_IDENTITY_PROMPT}\n\n${RETRIEVAL
   return messages;
 }
 
-function resolveMaxTokens(input: GenerationInput) {
+export function resolveMaxTokens(input: GenerationInput) {
   if (/(一句|简单|简短|very short|one line|brief|quick|concise)/i.test(input.userMessage || "")) {
     return Math.max(160, Math.floor(MODEL_MAX_TOKENS * 0.35));
   }
+  if (/(非常详细|完整教程|深入讲解|全面讲解|exhaustive|in[- ]depth|very detailed|comprehensive)/i.test(input.userMessage || "")) {
+    return MODEL_DETAILED_MAX_TOKENS;
+  }
   return MODEL_MAX_TOKENS;
+}
+
+export function shouldAutoContinue(input: GenerationInput) {
+  return /(继续输出到完成|继续写完|完整全文|不要省略|continue until complete|do not omit)/i.test(
+    input.userMessage || ""
+  );
+}
+
+type SupportedReasoningEffort = "none" | "low" | "high";
+
+function resolveDeepSeekReasoningEffort(): SupportedReasoningEffort {
+  const configured = process.env.DEEPSEEK_REASONING_EFFORT?.trim().toLowerCase();
+  if (
+    configured === "low" ||
+    configured === "high"
+  ) {
+    return configured;
+  }
+  return "none";
+}
+
+export function providerReasoningOptions(provider: "deepseek" | "openai") {
+  return provider === "deepseek"
+    ? { reasoning_effort: resolveDeepSeekReasoningEffort() }
+    : {};
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs = MODEL_TIMEOUT_MS): Promise<T> {
@@ -252,6 +283,7 @@ async function callProvider(params: {
           messages,
           temperature: MODEL_TEMPERATURE,
           max_tokens: maxTokens,
+          ...providerReasoningOptions(params.provider),
         });
         const content = cleanResponseText(completion.choices?.[0]?.message?.content?.trim() || "");
         if (!content) continue;
@@ -374,6 +406,7 @@ async function continueLengthLimitedResponse(params: {
         ],
         temperature: MODEL_TEMPERATURE,
         max_tokens: params.maxTokens,
+        ...providerReasoningOptions(params.provider),
       },
       { signal: params.signal }
     );
@@ -422,6 +455,7 @@ async function callProviderStream(params: {
             temperature: MODEL_TEMPERATURE,
             max_tokens: maxTokens,
             stream: true,
+            ...providerReasoningOptions(params.provider),
           },
           { signal: params.signal }
         );
@@ -456,7 +490,11 @@ async function callProviderStream(params: {
           }
         }
 
-        if (!suppressDraft && finishReason === "length") {
+        if (
+          !suppressDraft &&
+          finishReason === "length" &&
+          shouldAutoContinue(params.input)
+        ) {
           text = await continueLengthLimitedResponse({
             provider: params.provider,
             client: params.client,
@@ -518,7 +556,7 @@ async function callDeepSeek(input: GenerationInput): Promise<GenerationResult | 
     baseURL: process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com",
   });
 
-  const models = parseModels(process.env.DEEPSEEK_MODEL, ["deepseek-chat"]);
+  const models = parseModels(process.env.DEEPSEEK_MODEL, ["deepseek-flash"]);
   return callProvider({
     provider: "deepseek",
     client,
@@ -555,7 +593,7 @@ async function callDeepSeekStream(
     baseURL: process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com",
   });
 
-  const models = parseModels(process.env.DEEPSEEK_MODEL, ["deepseek-chat"]);
+  const models = parseModels(process.env.DEEPSEEK_MODEL, ["deepseek-flash"]);
   return callProviderStream({
     provider: "deepseek",
     client,
@@ -685,7 +723,7 @@ export async function generateShortTitle(input: { userMessage: string; locale: L
   const model =
     process.env.TITLE_MODEL?.trim() ||
     (useDeepSeek
-      ? parseModels(process.env.DEEPSEEK_MODEL, ["deepseek-chat"])[0]
+      ? parseModels(process.env.DEEPSEEK_MODEL, ["deepseek-flash"])[0]
       : parseModels(process.env.OPENAI_MODEL, ["gpt-4o-mini", "gpt-4.1-mini"])[0]);
 
   try {
@@ -704,6 +742,7 @@ export async function generateShortTitle(input: { userMessage: string; locale: L
         ],
         temperature: 0.3,
         max_tokens: TITLE_MAX_TOKENS,
+        ...(useDeepSeek ? providerReasoningOptions("deepseek") : {}),
       }),
       TITLE_TIMEOUT_MS
     );

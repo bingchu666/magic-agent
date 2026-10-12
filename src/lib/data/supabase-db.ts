@@ -31,6 +31,7 @@ import { createServerClient } from "@supabase/ssr";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { fromDatabaseRow, fromDatabaseRows, toDatabaseRow } from "@/lib/data/case-mapper";
+import { deleteCardBeforeThread } from "@/lib/data/delete-knowledge-card";
 
 // ── Helpers ──────────────────────────────────────────────
 
@@ -511,8 +512,10 @@ export const supabaseDb = {
     return { ...card, ...patch, updatedAt: updates.updatedAt as string };
   },
 
-  // Deletes the card's own thread (and cascades its messages/learning state
-  // via the existing deleteThread) before removing the card row itself.
+  // The card owns the thread reference, and the database intentionally uses
+  // ON DELETE RESTRICT for that relationship. Remove the card first so it no
+  // longer blocks thread cleanup. A failed best-effort cleanup must not turn a
+  // successfully deleted card into a misleading 500 response.
   // Whole-subtree deletes (a root card's children/branches) stay a
   // client-side loop responsibility, same as every other multi-row delete
   // in this codebase.
@@ -521,12 +524,27 @@ export const supabaseDb = {
     const card = await supabaseDb.getKnowledgeCard(cardId);
     if (!card || card.userId !== userId) return null;
 
-    if (card.threadId) {
-      await supabaseDb.deleteThread(card.threadId, userId);
-    }
+    await deleteCardBeforeThread({
+      deleteCard: async () => {
+        const { error } = await supabase
+          .from("knowledge_cards")
+          .delete()
+          .eq("id", cardId)
+          .eq("user_id", userId);
+        assertNoError(error, "Failed to delete knowledge card");
+      },
+      deleteThread: card.threadId
+        ? () => supabaseDb.deleteThread(card.threadId!, userId).then(() => undefined)
+        : undefined,
+      onThreadCleanupError: (cleanupError) => {
+        console.warn("Knowledge card deleted but thread cleanup failed", {
+          cardId,
+          threadId: card.threadId,
+          cleanupError,
+        });
+      },
+    });
 
-    const { error } = await supabase.from("knowledge_cards").delete().eq("id", cardId);
-    assertNoError(error, "Failed to delete knowledge card");
     return card;
   },
 

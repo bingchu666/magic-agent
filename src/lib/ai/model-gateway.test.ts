@@ -3,6 +3,9 @@ import {
   buildMessages,
   isGroundedMethodRefusal,
   mergeContinuationText,
+  providerReasoningOptions,
+  resolveMaxTokens,
+  shouldAutoContinue,
   type GenerationInput,
 } from "@/lib/ai/model-gateway";
 
@@ -35,12 +38,18 @@ function attachedFileMessage(messages: ReturnType<typeof buildMessages>) {
 
 describe("model gateway prompt", () => {
   const originalSystemPrompt = process.env.MAGIC_AGENT_SYSTEM_PROMPT;
+  const originalReasoningEffort = process.env.DEEPSEEK_REASONING_EFFORT;
 
   afterEach(() => {
     if (originalSystemPrompt === undefined) {
       delete process.env.MAGIC_AGENT_SYSTEM_PROMPT;
     } else {
       process.env.MAGIC_AGENT_SYSTEM_PROMPT = originalSystemPrompt;
+    }
+    if (originalReasoningEffort === undefined) {
+      delete process.env.DEEPSEEK_REASONING_EFFORT;
+    } else {
+      process.env.DEEPSEEK_REASONING_EFFORT = originalReasoningEffort;
     }
   });
 
@@ -233,5 +242,25 @@ describe("model gateway prompt", () => {
     ).toBe(
       "As your hand emerges, subtly pull the card into finger palm and close the wallet."
     );
+  });
+
+  it("uses fast non-thinking generation for interactive DeepSeek replies", () => {
+    delete process.env.DEEPSEEK_REASONING_EFFORT;
+    expect(providerReasoningOptions("deepseek")).toEqual({
+      reasoning_effort: "none",
+    });
+    expect(providerReasoningOptions("openai")).toEqual({});
+  });
+
+  it("keeps ordinary replies bounded and does not auto-continue them", () => {
+    const ordinary = input({
+      userMessage: "教我一个适合新手的基础魔术，一步步讲清楚怎么练。",
+    });
+
+    expect(resolveMaxTokens(ordinary)).toBe(1200);
+    expect(shouldAutoContinue(ordinary)).toBe(false);
+    expect(
+      shouldAutoContinue(input({ userMessage: "请继续输出到完成，不要省略" }))
+    ).toBe(true);
   });
 });

@@ -118,7 +118,7 @@ async function callRelevanceModel(prompt: string) {
       })
     : new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const model = useDeepSeek
-    ? (process.env.KNOWLEDGE_RELEVANCE_MODEL || process.env.DEEPSEEK_MODEL || "deepseek-chat")
+    ? (process.env.KNOWLEDGE_RELEVANCE_MODEL || process.env.DEEPSEEK_MODEL || "deepseek-flash")
         .split(",")[0]
         .trim()
     : (process.env.KNOWLEDGE_RELEVANCE_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini")
@@ -131,6 +131,7 @@ async function callRelevanceModel(prompt: string) {
       messages: [{ role: "user", content: prompt }],
       temperature: 0,
       max_tokens: 180,
+      ...(useDeepSeek ? { reasoning_effort: "none" as const } : {}),
     }),
     RELEVANCE_TIMEOUT_MS
   );
