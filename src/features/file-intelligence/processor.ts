@@ -87,6 +87,16 @@ async function ocrPdf(buffer: ArrayBuffer, pageNumbers?: number[]): Promise<Extr
 }
 
 export async function extractPdf(buffer: ArrayBuffer): Promise<ExtractedPage[]> {
+  // Externalized PDF.js loads native canvas dynamically. Import it explicitly
+  // so Next's function trace includes its platform binary on Vercel as well.
+  const canvas = await import("@napi-rs/canvas");
+  if (typeof globalThis.DOMMatrix === "undefined") {
+    Object.assign(globalThis, {
+      DOMMatrix: canvas.DOMMatrix,
+      ImageData: canvas.ImageData,
+      Path2D: canvas.Path2D,
+    });
+  }
   const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const document = await getDocument({
     data: new Uint8Array(buffer.slice(0)),

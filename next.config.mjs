@@ -10,7 +10,16 @@ const nextConfig = {
     "tesseract.js",
     "tesseract.js-core",
     "mammoth",
+    "@napi-rs/canvas",
   ],
+  outputFileTracingIncludes: {
+    "/api/files/*/enqueue": [
+      "./node_modules/@napi-rs/canvas*/**/*",
+      "./node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
+      "./node_modules/pdfjs-dist/standard_fonts/**/*",
+      "./node_modules/pdfjs-dist/cmaps/**/*",
+    ],
+  },
 };
 
 export default nextConfig;
