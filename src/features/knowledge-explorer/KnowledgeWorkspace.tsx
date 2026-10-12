@@ -68,6 +68,12 @@ import {
   KnowledgeControlCenter,
   type ControlCenterMode,
 } from "@/features/knowledge-explorer/KnowledgeControlCenter";
+import {
+  isStarterCardId,
+  LEGACY_STARTER_CARD_ID,
+  shouldScopeLegacyStarter,
+  starterCardIdForUser,
+} from "@/features/knowledge-explorer/starter-card-id";
 
 type CardRelation = "root" | "child" | "related" | "branch";
 type CardStatus = "idle" | "streaming" | "error";
@@ -228,11 +234,14 @@ const QUICK_PROMPTS: QuickPrompt[] = [
   },
 ];
 
-function createStarterCards(locale: Locale = "zh"): KnowledgeCard[] {
+function createStarterCards(
+  locale: Locale = "zh",
+  cardId = LEGACY_STARTER_CARD_ID
+): KnowledgeCard[] {
   const zh = locale === "zh";
   return [
     {
-      id: "glass_starter",
+      id: cardId,
       parentId: null,
       relation: "root",
       title: zh ? "开始探索" : "Start exploring",
@@ -833,7 +842,7 @@ export function KnowledgeWorkspace() {
   const relationMeta = relationMetaByLocale[locale];
   const [cards, setCards] = useState<KnowledgeCard[]>(() => createStarterCards(locale));
   const cardsRef = useRef(cards);
-  const [activeCardId, setActiveCardId] = useState("glass_starter");
+  const [activeCardId, setActiveCardId] = useState(LEGACY_STARTER_CARD_ID);
   const activeCardIdRef = useRef(activeCardId);
   const [cardInputs, setCardInputs] = useState<Record<string, string>>({});
   const [cardSelectionContexts, setCardSelectionContexts] = useState<Record<string, string>>({});
@@ -1198,7 +1207,7 @@ export function KnowledgeWorkspace() {
     commitCards((previous) =>
       previous.map((card) => {
         const stillUntouchedStarter =
-          card.id === "glass_starter" &&
+          isStarterCardId(card.id) &&
           !card.threadId &&
           (card.messages.length === 0 ||
             card.messages.some((message) => message.id === "glass_starter_assistant"));
@@ -1235,9 +1244,31 @@ export function KnowledgeWorkspace() {
         if (cancelled) return;
         setFolders(folderData.items);
 
+        const scopedStarterId = starterCardIdForUser(user.id);
+        const scopeLegacyStarter = shouldScopeLegacyStarter(
+          cardsRef.current.map((card) => card.id),
+          cardData.items.map((card) => card.id)
+        );
+
         commitCards((previous) => {
-          const localIds = new Set(previous.map((card) => card.id));
-          const merged = previous.map((card) => {
+          // `glass_starter` predates server sync and is a global primary key.
+          // Keep it for the original owner, but scope an unsynced legacy card
+          // to the current user so two accounts can never collide on insert.
+          const normalized = scopeLegacyStarter
+            ? previous.map((card) => ({
+                ...card,
+                id:
+                  card.id === LEGACY_STARTER_CARD_ID
+                    ? scopedStarterId
+                    : card.id,
+                parentId:
+                  card.parentId === LEGACY_STARTER_CARD_ID
+                    ? scopedStarterId
+                    : card.parentId,
+              }))
+            : previous;
+          const localIds = new Set(normalized.map((card) => card.id));
+          const merged = normalized.map((card) => {
             const remote = cardData.items.find((item) => item.id === card.id);
             if (!remote) return card;
             return {
@@ -1267,6 +1298,30 @@ export function KnowledgeWorkspace() {
             }));
           return additions.length > 0 ? [...merged, ...additions] : merged;
         });
+        if (scopeLegacyStarter) {
+          if (activeCardIdRef.current === LEGACY_STARTER_CARD_ID) {
+            activeCardIdRef.current = scopedStarterId;
+            setActiveCardId(scopedStarterId);
+          }
+          setCardInputs((previous) => {
+            if (!(LEGACY_STARTER_CARD_ID in previous)) return previous;
+            const next = { ...previous, [scopedStarterId]: previous[LEGACY_STARTER_CARD_ID] };
+            delete next[LEGACY_STARTER_CARD_ID];
+            return next;
+          });
+          setCardSelectionContexts((previous) => {
+            if (!(LEGACY_STARTER_CARD_ID in previous)) return previous;
+            const next = { ...previous, [scopedStarterId]: previous[LEGACY_STARTER_CARD_ID] };
+            delete next[LEGACY_STARTER_CARD_ID];
+            return next;
+          });
+          setCardAttachmentIds((previous) => {
+            if (!(LEGACY_STARTER_CARD_ID in previous)) return previous;
+            const next = { ...previous, [scopedStarterId]: previous[LEGACY_STARTER_CARD_ID] };
+            delete next[LEGACY_STARTER_CARD_ID];
+            return next;
+          });
+        }
       } catch (error) {
         console.warn("Failed to sync folders/knowledge cards from server", error);
       }
@@ -2136,7 +2191,9 @@ export function KnowledgeWorkspace() {
         }
       }
       const remaining = cardsRef.current.filter((card) => !ids.has(card.id));
-      const next = remaining.length ? remaining : createStarterCards(locale);
+      const next = remaining.length
+        ? remaining
+        : createStarterCards(locale, starterCardIdForUser(user?.id));
       commitCards(next);
       setExpandedCardId(null);
       setActiveCardId(next[0].id);
